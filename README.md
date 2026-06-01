@@ -7,7 +7,7 @@ Hermes model provider plugin for the internal Bonzai API at iO.
 ### One-command install via Git (recommended)
 
 ```bash
-git clone <your-repo-url> /tmp/bonzai-plugin && \
+git clone https://github.com/maavangent/bonzai-hermes-plugin /tmp/bonzai-plugin && \
 cd /tmp/bonzai-plugin && \
 ./install.sh && \
 rm -rf /tmp/bonzai-plugin
@@ -30,7 +30,7 @@ After installation, restart Hermes.
 ### Manual Git install
 
 ```bash
-git clone <your-repo-url> ~/.hermes/plugins/model-providers/bonzai-temp
+git clone https://github.com/maavangent/bonzai-hermes-plugin ~/.hermes/plugins/model-providers/bonzai-temp
 mv ~/.hermes/plugins/model-providers/bonzai-temp/bonzai ~/.hermes/plugins/model-providers/bonzai
 rm -rf ~/.hermes/plugins/model-providers/bonzai-temp
 ```
@@ -54,3 +54,13 @@ hermes model switch --provider bonzai
 ```
 
 Or use `/model` in the TUI.
+
+## Troubleshooting
+
+If you don't see the latest models after installing/updating the plugin, clear Hermes' model cache:
+
+```bash
+rm ~/.hermes/provider_models_cache.json
+```
+
+Then restart Hermes.
