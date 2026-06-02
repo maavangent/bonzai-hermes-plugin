@@ -29,103 +29,151 @@ _CACHE: dict = {"models": None, "ts": 0}
 _CACHE_TTL = 60
 
 
-def _parse_version(name: str):
-    """Extract (family, major, minor) from clean model names like claude-sonnet-4-6."""
-    match = re.search(r"claude-(sonnet|opus|haiku)-(\d+)-(\d+)", name)
-    if match:
-        family = match.group(1)
-        major = int(match.group(2))
-        minor = int(match.group(3))
-        return (family, major, minor)
-    return None
+# Sentinel returned by _classify for models we deliberately hide from the
+# picker (non-chat, lightweight tiers, backend/region duplicates), as opposed
+# to genuinely unrecognized families (which return family=None).
+_DROP = object()
 
 
-def _get_latest(models: list[str], family: str):
-    """Find the model with the highest version number for a family."""
-    candidates = []
-    for m in models:
-        if not m.startswith("claude"):
-            continue
-        if m.startswith("eu.anthropic."):
-            continue
-        if "@" in m or re.search(r"20\d{6}", m):
-            continue
-        parsed = _parse_version(m)
-        if parsed and parsed[0] == family:
-            candidates.append((parsed, m))
+def _classify(model_id: str):
+    """Map a model id to (family, version_tuple, canonical_id).
 
-    if not candidates:
-        return None
+    - family is a string  -> recognized; group it.
+    - family is _DROP      -> deliberately hide (non-chat / lightweight / dup).
+    - family is None       -> unrecognized family; keep it (future-proof).
+    """
+    m = model_id
 
-    # Sort by (major, minor) descending
-    candidates.sort(key=lambda x: (x[0][1], x[0][2]), reverse=True)
-    return candidates[0][1]
+    # Non-chat models — never useful as a chat/agent model.
+    if re.search(r"(embedding|rerank|whisper|image|imagen)", m, re.I) or m == "tts":
+        return _DROP, None, None
+
+    # Backend/region duplicates and snapshot variants.
+    if re.search(r"(-bedrock$|-vertex$|@|^eu\.anthropic\.|^anthropic\.|"
+                 r"^uncompliant-global-|-NVFP4$|\d{8})", m, re.I):
+        return _DROP, None, None
+
+    # Lightweight tiers — drop from the curated picker.
+    if re.search(r"(-mini$|-nano$|-lite$|-bonzai$|-flash-lite$)", m):
+        return _DROP, None, None
+    if re.match(r"^glm-\d+(?:\.\d+)?-flash$", m):  # GLM flash = lightweight
+        return _DROP, None, None
+
+    # --- Claude: two naming schemes, normalized to one canonical id ---
+    cm = re.match(r"^claude-(sonnet|opus|haiku)-(\d+)-(\d+)$", m)
+    if cm:
+        fam, a, b = cm.group(1), int(cm.group(2)), int(cm.group(3))
+        return f"claude-{fam}", (a, b), f"claude-{fam}-{a}-{b}"
+    cm = re.match(r"^claude-(\d+)-(\d+)-(sonnet|opus|haiku)$", m)
+    if cm:
+        a, b, fam = int(cm.group(1)), int(cm.group(2)), cm.group(3)
+        return f"claude-{fam}", (a, b), f"claude-{fam}-{a}-{b}"
+    cm = re.match(r"^claude-(\d+)-(sonnet|opus|haiku)$", m)
+    if cm:
+        a, fam = int(cm.group(1)), cm.group(2)
+        return f"claude-{fam}", (a, 0), f"claude-{fam}-{a}-0"
+
+    # --- OpenAI GPT-5.x / GPT-4 / o-series ---
+    g = re.match(r"^gpt-(5(?:\.\d+)?)$", m)
+    if g:
+        return "gpt-5", (float(g.group(1)),), m
+    if m == "gpt-4o":
+        return "gpt-4", (4.0,), m
+    g = re.match(r"^gpt-(4\.\d+)$", m)
+    if g:
+        return "gpt-4", (float(g.group(1)),), m
+    g = re.match(r"^o(\d+)$", m)
+    if g:
+        return "o-series", (int(g.group(1)),), m
+
+    # --- Google Gemini (pro / flash, full size only) ---
+    g = re.match(r"^gemini-(\d+(?:\.\d+)?)-(pro|flash)$", m)
+    if g:
+        return f"gemini-{g.group(2)}", (float(g.group(1)),), m
+
+    # --- Zhipu GLM (full size only) ---
+    g = re.match(r"^glm-(\d+(?:\.\d+)?)$", m)
+    if g:
+        return "glm", (float(g.group(1)),), m
+
+    # --- Mistral (Codestral / Devstral) ---
+    if m.startswith("codestral"):
+        return "mistral-codestral", (0,), m
+    if m.startswith("devstral"):
+        return "mistral-devstral", (0,), m
+
+    return None, None, None  # unrecognized family — keep it
 
 
-def _is_noise(model_id: str) -> bool:
-    """Filter out redundant / region-specific / date-stamped duplicates."""
-    if model_id.startswith("eu.anthropic."):
-        return True
-    if "@" in model_id:
-        return True
-    if re.search(r"20\d{6}", model_id):  # date-stamped snapshot duplicates
-        return True
-    return False
+# Visual separator between the "latest per family" tier and older versions.
+# It is not a real model id; selecting it just fails the switch harmlessly.
+_SEPARATOR = "──────── oudere versies ────────"
+
+# Display order of families in the top tier.
+_FAMILY_ORDER = [
+    "claude-opus", "claude-sonnet", "claude-haiku",
+    "gpt-5", "gpt-4", "o-series",
+    "gemini-pro", "gemini-flash",
+    "glm", "mistral-codestral", "mistral-devstral",
+]
 
 
 def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
-    """Build a clean shortlist.
+    """Build a tidy, two-tier shortlist for the model picker.
 
-    Curated, hand-ordered entries (latest Claude per family + key OpenAI
-    models) come first so the picker stays tidy. Everything else Bonzai
-    exposes is still appended afterwards — so when iO adds new families
-    (Gemini, Mistral, new GPT versions, ...) they are NOT silently dropped.
+    Tier 1 (top): the latest model per recognized family.
+    Separator.
+    Tier 2: older versions of those same families.
+
+    Lightweight tiers, non-chat models (embeddings/tts/image/rerank) and
+    backend/region duplicates are dropped entirely. Unknown families are
+    NOT dropped — they are appended after tier 2 so new offerings still
+    surface (future-proof).
     """
-    shortlist: list[str] = []
+    from collections import defaultdict
 
-    # 1. Curated: latest Claude per family (highest version wins)
-    for family in ["sonnet", "opus", "haiku"]:
-        latest = _get_latest(raw_models, family)
-        if latest:
-            shortlist.append(latest)
+    grouped: dict = defaultdict(dict)  # family -> {canonical_id: (version, display_id)}
+    unknown: list[str] = []
 
-    # 2. Curated: key OpenAI models, in preferred order
-    for model in ["gpt-5.5", "gpt-4o", "o3", "o1"]:
-        match = next((m for m in raw_models if model in m), None)
-        if match:
-            shortlist.append(match)
+    for m in raw_models:
+        fam, ver, canon = _classify(m)
+        if fam is _DROP:
+            continue  # deliberately hidden (non-chat / lightweight / dup)
+        if fam is None:
+            unknown.append(m)  # unrecognized family — keep it (future-proof)
+            continue
+        # Prefer the canonical spelling (e.g. claude-opus-4-8 over claude-4-8-opus)
+        prev = grouped[fam].get(canon)
+        if prev is None or m == canon:
+            grouped[fam][canon] = (ver, m)
 
-    # 3. Everything else Bonzai offers (future-proof), de-noised + sorted.
-    #    Older versions of an already-curated Claude family are dropped too,
-    #    so the picker shows only the latest sonnet/opus/haiku — not every
-    #    historical point release.
-    curated = set(shortlist)
+    # Families seen but not in the explicit order list still get shown.
+    ordered_families = _FAMILY_ORDER + [f for f in grouped if f not in _FAMILY_ORDER]
 
-    def _is_superseded_claude(model_id: str) -> bool:
-        parsed = _parse_version(model_id)
-        if not parsed:
-            return False
-        family = parsed[0]
-        latest = _get_latest(raw_models, family)
-        return latest is not None and model_id != latest
+    tier1: list[str] = []
+    tier2: list[str] = []
+    for fam in ordered_families:
+        if fam not in grouped:
+            continue
+        items = sorted(grouped[fam].values(), reverse=True)
+        tier1.append(items[0][1])
+        tier2.extend(x[1] for x in items[1:])
 
-    remainder = sorted(
-        m for m in raw_models
-        if m not in curated
-        and not _is_noise(m)
-        and not _is_superseded_claude(m)
-    )
-    shortlist.extend(remainder)
+    result: list[str] = list(tier1)
+    if tier2 or unknown:
+        result.append(_SEPARATOR)
+    result.extend(tier2)
+    result.extend(sorted(unknown))
 
-    # Deduplicate while preserving order
-    seen: set[str] = set()
+    # Deduplicate while preserving order.
+    seen: set = set()
     final: list[str] = []
-    for m in shortlist:
+    for m in result:
         if m not in seen:
             seen.add(m)
             final.append(m)
-
     return final
+
 
 
 class BonzaiProfile(ProviderProfile):
