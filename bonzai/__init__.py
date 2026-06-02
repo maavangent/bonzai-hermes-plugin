@@ -29,87 +29,18 @@ _CACHE: dict = {"models": None, "ts": 0}
 _CACHE_TTL = 60
 
 
-# Sentinel returned by _classify for models we deliberately hide from the
-# picker (non-chat, lightweight tiers, backend/region duplicates), as opposed
-# to genuinely unrecognized families (which return family=None).
-_DROP = object()
+# Pure duplicates of a model that is already listed under a cleaner id:
+# backend routes (-bedrock/-vertex), region/vendor prefixes (eu.anthropic.*,
+# anthropic.*), and dated snapshots (@date or -YYYYMMDD). These are hidden.
+_DUPLICATE = re.compile(
+    r"(-bedrock$|-vertex$|@|^eu\.anthropic\.|^anthropic\.|\d{8})"
+)
 
+# Visual separator between tier 1 (flagships) and tier 2 (everything else).
+# Not a real model id — selecting it just fails the switch harmlessly.
+_SEPARATOR = "────────────────────────────────"
 
-def _classify(model_id: str):
-    """Map a model id to (family, version_tuple, canonical_id).
-
-    - family is a string  -> recognized; group it.
-    - family is _DROP      -> deliberately hide (non-chat / lightweight / dup).
-    - family is None       -> unrecognized family; keep it (future-proof).
-    """
-    m = model_id
-
-    # Non-chat models — never useful as a chat/agent model.
-    if re.search(r"(embedding|rerank|whisper|image|imagen)", m, re.I) or m == "tts":
-        return _DROP, None, None
-
-    # Backend/region duplicates and snapshot variants.
-    if re.search(r"(-bedrock$|-vertex$|@|^eu\.anthropic\.|^anthropic\.|"
-                 r"^uncompliant-global-|-NVFP4$|\d{8})", m, re.I):
-        return _DROP, None, None
-
-    # Lightweight tiers — drop from the curated picker.
-    if re.search(r"(-mini$|-nano$|-lite$|-bonzai$|-flash-lite$)", m):
-        return _DROP, None, None
-    if re.match(r"^glm-\d+(?:\.\d+)?-flash$", m):  # GLM flash = lightweight
-        return _DROP, None, None
-
-    # --- Claude: two naming schemes, normalized to one canonical id ---
-    cm = re.match(r"^claude-(sonnet|opus|haiku)-(\d+)-(\d+)$", m)
-    if cm:
-        fam, a, b = cm.group(1), int(cm.group(2)), int(cm.group(3))
-        return f"claude-{fam}", (a, b), f"claude-{fam}-{a}-{b}"
-    cm = re.match(r"^claude-(\d+)-(\d+)-(sonnet|opus|haiku)$", m)
-    if cm:
-        a, b, fam = int(cm.group(1)), int(cm.group(2)), cm.group(3)
-        return f"claude-{fam}", (a, b), f"claude-{fam}-{a}-{b}"
-    cm = re.match(r"^claude-(\d+)-(sonnet|opus|haiku)$", m)
-    if cm:
-        a, fam = int(cm.group(1)), cm.group(2)
-        return f"claude-{fam}", (a, 0), f"claude-{fam}-{a}-0"
-
-    # --- OpenAI GPT-5.x / GPT-4 / o-series ---
-    g = re.match(r"^gpt-(5(?:\.\d+)?)$", m)
-    if g:
-        return "gpt-5", (float(g.group(1)),), m
-    if m == "gpt-4o":
-        return "gpt-4", (4.0,), m
-    g = re.match(r"^gpt-(4\.\d+)$", m)
-    if g:
-        return "gpt-4", (float(g.group(1)),), m
-    g = re.match(r"^o(\d+)$", m)
-    if g:
-        return "o-series", (int(g.group(1)),), m
-
-    # --- Google Gemini (pro / flash, full size only) ---
-    g = re.match(r"^gemini-(\d+(?:\.\d+)?)-(pro|flash)$", m)
-    if g:
-        return f"gemini-{g.group(2)}", (float(g.group(1)),), m
-
-    # --- Zhipu GLM (full size only) ---
-    g = re.match(r"^glm-(\d+(?:\.\d+)?)$", m)
-    if g:
-        return "glm", (float(g.group(1)),), m
-
-    # --- Mistral (Codestral / Devstral) ---
-    if m.startswith("codestral"):
-        return "mistral-codestral", (0,), m
-    if m.startswith("devstral"):
-        return "mistral-devstral", (0,), m
-
-    return None, None, None  # unrecognized family — keep it
-
-
-# Visual separator between the "latest per family" tier and older versions.
-# It is not a real model id; selecting it just fails the switch harmlessly.
-_SEPARATOR = "──────── oudere versies ────────"
-
-# Display order of families in the top tier.
+# Display order of families in tier 1 (newest of each shown up top).
 _FAMILY_ORDER = [
     "claude-opus", "claude-sonnet", "claude-haiku",
     "gpt-5", "gpt-4", "o-series",
@@ -118,61 +49,109 @@ _FAMILY_ORDER = [
 ]
 
 
+def _claude_identity(m: str):
+    """For Claude models, return (identity_key, (major, minor)).
+
+    Bonzai exposes two naming schemes for the same model
+    (``claude-opus-4-8`` and ``claude-4-8-opus``). The identity key
+    normalizes both so they dedupe; the version drives 'newest wins'.
+    Returns (None, None) for non-Claude ids.
+    """
+    cm = re.match(r"^claude-(sonnet|opus|haiku)-(\d+)-(\d+)$", m)
+    if cm:
+        return f"claude-{cm.group(1)}-{cm.group(2)}-{cm.group(3)}", (int(cm.group(2)), int(cm.group(3)))
+    cm = re.match(r"^claude-(\d+)-(\d+)-(sonnet|opus|haiku)$", m)
+    if cm:
+        return f"claude-{cm.group(3)}-{cm.group(1)}-{cm.group(2)}", (int(cm.group(1)), int(cm.group(2)))
+    cm = re.match(r"^claude-(\d+)-(sonnet|opus|haiku)$", m)
+    if cm:
+        return f"claude-{cm.group(2)}-{cm.group(1)}", (int(cm.group(1)), 0)
+    return None, None
+
+
+def _tier1_family(m: str):
+    """Return (family, version) if ``m`` is a flagship chat model eligible for
+    tier 1, else (None, None). Lightweight tiers (mini/nano/lite/flash) and
+    non-chat models are intentionally NOT flagships — they fall to tier 2.
+    """
+    key, ver = _claude_identity(m)
+    if key:
+        return "-".join(key.split("-")[:2]), ver  # claude-opus / -sonnet / -haiku
+    if re.match(r"^gpt-5(?:\.\d+)?$", m):
+        return "gpt-5", (float(m.split("-")[1]),)
+    if m == "gpt-4o":
+        return "gpt-4", (4.0,)
+    if re.match(r"^gpt-4\.\d+$", m):
+        return "gpt-4", (float(m.split("-")[1]),)
+    if re.match(r"^o\d+$", m):
+        return "o-series", (int(m[1:]),)
+    g = re.match(r"^gemini-(\d+(?:\.\d+)?)-(pro|flash)$", m)
+    if g:
+        return f"gemini-{g.group(2)}", (float(g.group(1)),)
+    if re.match(r"^glm-\d+(?:\.\d+)?$", m):
+        return "glm", (float(m.split("-")[1]),)
+    if m.startswith("codestral"):
+        return "mistral-codestral", (0,)
+    if m.startswith("devstral"):
+        return "mistral-devstral", (0,)
+    return None, None
+
+
 def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
-    """Build a tidy, two-tier shortlist for the model picker.
+    """Build a two-tier picker list.
 
-    Tier 1 (top): the latest model per recognized family.
-    Separator.
-    Tier 2: older versions of those same families.
+    Tier 1: the newest flagship chat model per family (Claude/GPT/Gemini/...).
+    Separator line.
+    Tier 2: everything else Bonzai offers — older versions, lightweight tiers
+    (mini/nano/flash), and non-chat models (embeddings/tts/image/rerank).
 
-    Lightweight tiers, non-chat models (embeddings/tts/image/rerank) and
-    backend/region duplicates are dropped entirely. Unknown families are
-    NOT dropped — they are appended after tier 2 so new offerings still
-    surface (future-proof).
+    Only PURE duplicates are hidden: backend routes (-bedrock/-vertex),
+    region/vendor prefixes (eu.anthropic.*), and dated snapshots. The two
+    Claude naming schemes are deduped to the cleanest spelling. Every id that
+    survives is a real, callable model id from the API.
     """
     from collections import defaultdict
 
-    grouped: dict = defaultdict(dict)  # family -> {canonical_id: (version, display_id)}
-    unknown: list[str] = []
-
+    # 1. Drop pure duplicates; dedupe Claude naming schemes (keep real id).
+    seen_claude: dict = {}
+    kept: list[str] = []
     for m in raw_models:
-        fam, ver, canon = _classify(m)
-        if fam is _DROP:
-            continue  # deliberately hidden (non-chat / lightweight / dup)
-        if fam is None:
-            unknown.append(m)  # unrecognized family — keep it (future-proof)
+        if _DUPLICATE.search(m):
             continue
-        # Prefer the canonical spelling (e.g. claude-opus-4-8 over claude-4-8-opus)
-        prev = grouped[fam].get(canon)
-        if prev is None or m == canon:
-            grouped[fam][canon] = (ver, m)
+        key, _ = _claude_identity(m)
+        if key:
+            if key in seen_claude:
+                # Already have this model; prefer the 'claude-<fam>-<a>-<b>' spelling.
+                prev = seen_claude[key]
+                if re.match(r"^claude-(sonnet|opus|haiku)-\d", m) and prev != m:
+                    kept[kept.index(prev)] = m
+                    seen_claude[key] = m
+                continue
+            seen_claude[key] = m
+            kept.append(m)
+        else:
+            kept.append(m)
 
-    # Families seen but not in the explicit order list still get shown.
-    ordered_families = _FAMILY_ORDER + [f for f in grouped if f not in _FAMILY_ORDER]
+    # 2. Tier 1: newest flagship per family, in display order.
+    groups: dict = defaultdict(list)
+    for m in kept:
+        fam, ver = _tier1_family(m)
+        if fam:
+            groups[fam].append((ver, m))
+    tier1: list[str] = [
+        sorted(groups[f], reverse=True)[0][1]
+        for f in _FAMILY_ORDER if f in groups
+    ]
 
-    tier1: list[str] = []
-    tier2: list[str] = []
-    for fam in ordered_families:
-        if fam not in grouped:
-            continue
-        items = sorted(grouped[fam].values(), reverse=True)
-        tier1.append(items[0][1])
-        tier2.extend(x[1] for x in items[1:])
+    # 3. Tier 2: everything else, sorted alphabetically.
+    tier1_set = set(tier1)
+    tier2 = sorted(m for m in kept if m not in tier1_set)
 
-    result: list[str] = list(tier1)
-    if tier2 or unknown:
+    result = list(tier1)
+    if tier2:
         result.append(_SEPARATOR)
-    result.extend(tier2)
-    result.extend(sorted(unknown))
-
-    # Deduplicate while preserving order.
-    seen: set = set()
-    final: list[str] = []
-    for m in result:
-        if m not in seen:
-            seen.add(m)
-            final.append(m)
-    return final
+        result.extend(tier2)
+    return result
 
 
 
