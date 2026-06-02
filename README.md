@@ -35,6 +35,25 @@ rm -rf ~/.hermes/plugins/model-providers/bonzai-temp
 
 After installation, the `install.sh` script will automatically try to register the required HermesOverlay.
 
+## Updating
+
+To pull the latest version and re-install in one go:
+
+```bash
+git clone https://github.com/maavangent/bonzai-hermes-plugin /tmp/bonzai-plugin && \
+cd /tmp/bonzai-plugin && \
+./update.sh && \
+rm -rf /tmp/bonzai-plugin
+```
+
+If you keep a local clone of this repo, just run:
+
+```bash
+./update.sh
+```
+
+`update.sh` pulls the latest code (when run from a git checkout) and then re-runs `install.sh`, which is fully idempotent — it refreshes the plugin files, leaves the existing overlay untouched, and clears the model cache. Restart Hermes afterwards.
+
 ## Configuration
 
 Add your API key to `~/.hermes/.env`:
