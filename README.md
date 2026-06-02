@@ -25,8 +25,6 @@ If you received the plugin as a `.zip` file:
 ./install.sh
 ```
 
-After installation, restart Hermes.
-
 ### Manual Git install
 
 ```bash
@@ -35,7 +33,7 @@ mv ~/.hermes/plugins/model-providers/bonzai-temp/bonzai ~/.hermes/plugins/model-
 rm -rf ~/.hermes/plugins/model-providers/bonzai-temp
 ```
 
-After installation, restart Hermes.
+After installation, the `install.sh` script will automatically try to register the required HermesOverlay.
 
 ## Configuration
 
@@ -47,49 +45,51 @@ BONZAI_API_KEY=your-key-here
 
 ## Usage
 
-After installing the plugin you **must** add a Hermes overlay entry so the CLI recognizes the provider.
+The `install.sh` now automatically adds the HermesOverlay entry.
 
-### 1. Add overlay (required one-time step)
-
-Edit `~/.hermes/hermes-agent/hermes_cli/providers.py` and add this entry inside the `HERMES_OVERLAYS` dictionary:
-
-```python
-"bonzai": HermesOverlay(
-    transport="openai_chat",
-    auth_type="api_key",
-    base_url_override="https://api-v2.bonzai.iodigital.com/",
-    extra_env_vars=("BONZAI_API_KEY",),
-),
-```
-
-### 2. Clear cache & restart
+After installation:
 
 ```bash
 rm ~/.hermes/provider_models_cache.json
 ```
 
-Then restart Hermes (or the gateway).
+Then restart Hermes completely.
 
-You can now switch to the provider using:
+You can now use the provider with:
 
 ```bash
 hermes model
 ```
 
-Or use `/model` in the TUI.
+Or `/model` inside the TUI.
 
 ## Troubleshooting
 
-If you see **"Unknown provider 'bonzai'"**:
+If you still get **"Unknown provider 'bonzai'"**:
 
-- Make sure you added the `HermesOverlay` entry above
-- Clear the cache: `rm ~/.hermes/provider_models_cache.json`
-- Restart Hermes completely
+1. Verify the overlay was added:
+   ```bash
+   grep -A 6 '"bonzai"' ~/.hermes/hermes-agent/hermes_cli/providers.py
+   ```
 
-If you don't see the latest models after installing/updating the plugin, clear Hermes' model cache:
+2. If missing, add it manually:
 
-```bash
-rm ~/.hermes/provider_models_cache.json
-```
+   Edit `~/.hermes/hermes-agent/hermes_cli/providers.py` and insert inside `HERMES_OVERLAYS`:
 
-Then restart Hermes.
+   ```python
+   "bonzai": HermesOverlay(
+       transport="openai_chat",
+       auth_type="api_key",
+       base_url_override="https://api-v2.bonzai.iodigital.com/",
+       extra_env_vars=("BONZAI_API_KEY",),
+   ),
+   ```
+
+3. Clear cache and restart:
+   ```bash
+   rm ~/.hermes/provider_models_cache.json
+   ```
+
+## Advanced
+
+If the automatic overlay insertion fails (rare), you can also run the installer again or manually apply the change shown above.
