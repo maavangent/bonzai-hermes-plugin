@@ -45,23 +45,27 @@ BONZAI_API_KEY=your-key-here
 
 ## Usage
 
-The `install.sh` now automatically adds the HermesOverlay entry.
+`install.sh` does everything automatically:
 
-After installation:
+1. Copies the plugin into `~/.hermes/plugins/model-providers/bonzai/` (auto-discovered by Hermes — no `plugins enable` needed)
+2. Adds the required `HermesOverlay` entry to `providers.py`
+3. Clears the model cache
 
-```bash
-rm ~/.hermes/provider_models_cache.json
-```
-
-Then restart Hermes completely.
-
-You can now use the provider with:
+After installing, just restart Hermes (or `hermes gateway restart`), then:
 
 ```bash
 hermes model
 ```
 
-Or `/model` inside the TUI.
+Select the `bonzai` provider (or use `/model` inside the TUI).
+
+## Uninstall
+
+```bash
+./uninstall.sh
+```
+
+This removes the plugin files, the `HermesOverlay` entry, and the model cache. Restart Hermes afterwards. If `bonzai` was your active model, switch to another with `hermes model` first.
 
 ## Troubleshooting
 
@@ -72,9 +76,7 @@ If you still get **"Unknown provider 'bonzai'"**:
    grep -A 6 '"bonzai"' ~/.hermes/hermes-agent/hermes_cli/providers.py
    ```
 
-2. If missing, add it manually:
-
-   Edit `~/.hermes/hermes-agent/hermes_cli/providers.py` and insert inside `HERMES_OVERLAYS`:
+2. If missing, add it manually — edit `~/.hermes/hermes-agent/hermes_cli/providers.py` and insert inside `HERMES_OVERLAYS`:
 
    ```python
    "bonzai": HermesOverlay(
@@ -90,6 +92,4 @@ If you still get **"Unknown provider 'bonzai'"**:
    rm ~/.hermes/provider_models_cache.json
    ```
 
-## Advanced
-
-If the automatic overlay insertion fails (rare), you can also run the installer again or manually apply the change shown above.
+Note: the overlay lives in the Hermes source tree, so it may need to be re-added after a major `hermes update`. Just re-run `./install.sh`.

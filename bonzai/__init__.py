@@ -3,6 +3,8 @@
 Returns a clean, smart shortlist with only the latest models available through the Bonzai API.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -10,8 +12,16 @@ import re
 import ssl
 import time
 import urllib.request
+
 from providers import register_provider
-from providers.base import ProviderProfile, _profile_user_agent
+from providers.base import ProviderProfile
+
+try:
+    from hermes_cli import __version__ as _HERMES_VERSION
+except Exception:  # pragma: no cover - defensive
+    _HERMES_VERSION = "unknown"
+
+_USER_AGENT = f"HermesAgent/{_HERMES_VERSION}"
 
 logger = logging.getLogger(__name__)
 
@@ -52,25 +62,64 @@ def _get_latest(models: list[str], family: str):
     return candidates[0][1]
 
 
-def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
-    """Build a clean shortlist with the latest Claude models + key GPT/reasoning models."""
-    shortlist = []
+def _is_noise(model_id: str) -> bool:
+    """Filter out redundant / region-specific / date-stamped duplicates."""
+    if model_id.startswith("eu.anthropic."):
+        return True
+    if "@" in model_id:
+        return True
+    if re.search(r"20\d{6}", model_id):  # date-stamped snapshot duplicates
+        return True
+    return False
 
-    # Latest Claude models (highest version number wins)
+
+def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
+    """Build a clean shortlist.
+
+    Curated, hand-ordered entries (latest Claude per family + key OpenAI
+    models) come first so the picker stays tidy. Everything else Bonzai
+    exposes is still appended afterwards — so when iO adds new families
+    (Gemini, Mistral, new GPT versions, ...) they are NOT silently dropped.
+    """
+    shortlist: list[str] = []
+
+    # 1. Curated: latest Claude per family (highest version wins)
     for family in ["sonnet", "opus", "haiku"]:
         latest = _get_latest(raw_models, family)
         if latest:
             shortlist.append(latest)
 
-    # Key OpenAI models
-    openai_models = ["gpt-5.5", "gpt-4o", "o3", "o1"]
-    for model in openai_models:
-        if any(model in m for m in raw_models):
-            shortlist.append(model)
+    # 2. Curated: key OpenAI models, in preferred order
+    for model in ["gpt-5.5", "gpt-4o", "o3", "o1"]:
+        match = next((m for m in raw_models if model in m), None)
+        if match:
+            shortlist.append(match)
+
+    # 3. Everything else Bonzai offers (future-proof), de-noised + sorted.
+    #    Older versions of an already-curated Claude family are dropped too,
+    #    so the picker shows only the latest sonnet/opus/haiku — not every
+    #    historical point release.
+    curated = set(shortlist)
+
+    def _is_superseded_claude(model_id: str) -> bool:
+        parsed = _parse_version(model_id)
+        if not parsed:
+            return False
+        family = parsed[0]
+        latest = _get_latest(raw_models, family)
+        return latest is not None and model_id != latest
+
+    remainder = sorted(
+        m for m in raw_models
+        if m not in curated
+        and not _is_noise(m)
+        and not _is_superseded_claude(m)
+    )
+    shortlist.extend(remainder)
 
     # Deduplicate while preserving order
-    seen = set()
-    final = []
+    seen: set[str] = set()
+    final: list[str] = []
     for m in shortlist:
         if m not in seen:
             seen.add(m)
@@ -101,11 +150,20 @@ class BonzaiProfile(ProviderProfile):
         req = urllib.request.Request(url)
         req.add_header("Authorization", f"Bearer {api_key}")
         req.add_header("Accept", "application/json")
-        req.add_header("User-Agent", _profile_user_agent())
+        req.add_header("User-Agent", _USER_AGENT)
 
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        # TLS verification stays ON. Bonzai presents a valid, publicly
+        # verifiable certificate, but Python on macOS ships its own CA
+        # bundle (separate from the system keychain) which can miss the
+        # issuer and raise CERTIFICATE_VERIFY_FAILED. Prefer certifi's
+        # up-to-date bundle when available; otherwise fall back to the
+        # system default. We NEVER disable verification — on failure the
+        # except-block below returns the static fallback model list.
+        try:
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            ctx = ssl.create_default_context()
 
         try:
             with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
@@ -132,9 +190,20 @@ bonzai = BonzaiProfile(
     aliases=("bonzai-api", "io-bonzai", "iodigital"),
     display_name="Bonzai",
     description="Bonzai API provider for iO",
+    # Update to the internal iO key/portal docs URL if there is one — this is
+    # shown in the `hermes model` picker so colleagues know where to get a key.
+    signup_url="https://www.iodigital.com/",
     base_url="https://api-v2.bonzai.iodigital.com/",
     auth_type="api_key",
     env_vars=("BONZAI_API_KEY",),
+    # Consistent attribution on ALL requests (chat + fetch). The base-class
+    # client construction picks default_headers up automatically, so iO can
+    # identify Hermes traffic in Bonzai logs.
+    default_headers={"User-Agent": _USER_AGENT},
+    # Cheap/fast model for auxiliary tasks (vision, compression,
+    # session-search) so they don't silently fall back to the "auto" backend.
+    default_aux_model="claude-haiku-4-5",
+    default_max_tokens=8192,
     fallback_models=(
         "claude-sonnet-4-6",
         "claude-opus-4-8",
