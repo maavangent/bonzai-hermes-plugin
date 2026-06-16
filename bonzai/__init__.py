@@ -229,9 +229,8 @@ bonzai = BonzaiProfile(
     aliases=("bonzai-api", "io-bonzai", "iodigital"),
     display_name="Bonzai",
     description="Bonzai API provider for iO",
-    # Update to the internal iO key/portal docs URL if there is one — this is
-    # shown in the `hermes model` picker so colleagues know where to get a key.
-    signup_url="https://www.iodigital.com/",
+    # Shown in the `hermes model` picker so colleagues know where to get a key.
+    signup_url="https://bonzai.iodigital.com/",
     base_url="https://api-v2.bonzai.iodigital.com/",
     auth_type="api_key",
     env_vars=("BONZAI_API_KEY",),
