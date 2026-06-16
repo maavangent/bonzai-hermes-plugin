@@ -29,11 +29,22 @@ _CACHE: dict = {"models": None, "ts": 0}
 _CACHE_TTL = 60
 
 
-# Pure duplicates of a model that is already listed under a cleaner id:
-# backend routes (-bedrock/-vertex), region/vendor prefixes (eu.anthropic.*,
-# anthropic.*), and dated snapshots (@date or -YYYYMMDD). These are hidden.
+# Pure duplicates / non-selectable ids that should never appear in the picker:
+#   - backend routes (-bedrock/-vertex), region/vendor prefixes
+#     (eu.anthropic.*, anthropic.*), and dated snapshots (@date or -YYYYMMDD)
+#   - "uncompliant-global-*" models: these bypass iO's compliance/privacy
+#     filtering and must not be offered to colleagues
+# All of these are hidden from the shortlist entirely.
 _DUPLICATE = re.compile(
-    r"(-bedrock$|-vertex$|@|^eu\.anthropic\.|^anthropic\.|\d{8})"
+    r"(-bedrock$|-vertex$|@|^eu\.anthropic\.|^anthropic\.|\d{8}|^uncompliant-)"
+)
+
+# Non-chat model ids that cannot be used as a conversational model and only add
+# noise to a model picker: image generation, TTS, speech-to-text, embeddings,
+# and rerankers. Matched by substring/prefix and hidden from the shortlist.
+_NON_CHAT = re.compile(
+    r"(image|embedding|rerank|^tts$|^whisper$|imagen)",
+    re.IGNORECASE,
 )
 
 # Visual separator between tier 1 (flagships) and tier 2 (everything else).
@@ -102,21 +113,22 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
 
     Tier 1: the newest flagship chat model per family (Claude/GPT/Gemini/...).
     Separator line.
-    Tier 2: everything else Bonzai offers — older versions, lightweight tiers
-    (mini/nano/flash), and non-chat models (embeddings/tts/image/rerank).
+    Tier 2: every other selectable chat model — older versions and lightweight
+    tiers (mini/nano/flash).
 
-    Only PURE duplicates are hidden: backend routes (-bedrock/-vertex),
-    region/vendor prefixes (eu.anthropic.*), and dated snapshots. The two
-    Claude naming schemes are deduped to the cleanest spelling. Every id that
-    survives is a real, callable model id from the API.
+    Hidden entirely: PURE duplicates (backend routes -bedrock/-vertex,
+    region/vendor prefixes eu.anthropic.*, dated snapshots), compliance-bypass
+    "uncompliant-global-*" models, and non-chat models (image/tts/whisper/
+    embeddings/rerank). The two Claude naming schemes are deduped to the
+    cleanest spelling. Every id that survives is a real, callable chat model.
     """
     from collections import defaultdict
 
-    # 1. Drop pure duplicates; dedupe Claude naming schemes (keep real id).
+    # 1. Drop pure duplicates and non-chat models; dedupe Claude naming schemes.
     seen_claude: dict = {}
     kept: list[str] = []
     for m in raw_models:
-        if _DUPLICATE.search(m):
+        if _DUPLICATE.search(m) or _NON_CHAT.search(m):
             continue
         key, _ = _claude_identity(m)
         if key:
@@ -230,7 +242,11 @@ bonzai = BonzaiProfile(
     # Cheap/fast model for auxiliary tasks (vision, compression,
     # session-search) so they don't silently fall back to the "auto" backend.
     default_aux_model="claude-haiku-4-5",
-    default_max_tokens=8192,
+    # Output-token ceiling per response. Set to 32k — a safe middle ground that
+    # is within every Bonzai model's output limit while giving the agent room
+    # for large writes (full files, plans, long refactors). The old 8192 cut
+    # off long Claude/GPT responses.
+    default_max_tokens=32768,
     fallback_models=(
         "claude-sonnet-4-6",
         "claude-opus-4-8",
