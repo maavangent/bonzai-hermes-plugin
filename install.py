@@ -156,7 +156,11 @@ def do_install() -> None:
 
     log("")
     log("Installation complete. Restart Hermes (or 'hermes gateway restart').")
-    log("Then run 'hermes model' and select the 'bonzai' provider.")
+    log("")
+    log("Then run:  hermes model")
+    log("  -> select the 'bonzai' provider")
+    log("  -> paste your BONZAI_API_KEY when prompted (Hermes stores it for you)")
+    log("  -> pick a model (e.g. claude-sonnet-4-6)")
 
 
 def do_uninstall() -> None:

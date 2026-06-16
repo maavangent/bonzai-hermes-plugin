@@ -9,12 +9,17 @@ Windows Terminal, Terminal.app, or any shell with Python 3.
 ## Requirements
 
 - [Hermes Agent](https://hermes-agent.nousresearch.com/) installed (desktop app or CLI)
-- Python 3 (ships with Hermes; on Windows it's available as `python`)
+- Python 3 (ships with Hermes)
 - `git` (for the one-command install)
+
+You do **not** need to manually add an API key — `hermes model` asks for your
+`BONZAI_API_KEY` during setup and stores it for you (see step 2 below).
 
 ## Installation
 
-### One-command install (recommended)
+The install is two steps: install the plugin, then configure it with `hermes model`.
+
+### Step 1 — Install the plugin
 
 **macOS / Linux:**
 
@@ -34,26 +39,29 @@ python install.py; `
 cd ~; Remove-Item -Recurse -Force $env:TEMP\bonzai-plugin
 ```
 
-### Install from a local clone or ZIP
+> Already have a local clone or unzipped download? Just run `python install.py`
+> (use `python3` on macOS/Linux, `python` on Windows) from inside the folder.
 
-If you already cloned the repo (or unzipped a download), just run from inside it:
+Then **restart Hermes** (or `hermes gateway restart`) so the new provider loads.
+
+### Step 2 — Configure with `hermes model`
 
 ```bash
-python install.py          # macOS / Linux
-python install.py          # Windows (use `python`, not `python3`)
+hermes model
 ```
 
-## Configuration
+This launches Hermes' built-in setup wizard:
 
-Add your API key to `~/.hermes/.env` (on Windows: `%USERPROFILE%\.hermes\.env`):
+1. Select the **Bonzai** provider from the list
+2. Paste your `BONZAI_API_KEY` when prompted — Hermes stores it in `.env` for you
+3. Confirm the base URL (already filled in: `https://api-v2.bonzai.iodigital.com/`)
+4. Pick a model (e.g. `claude-sonnet-4-6`)
 
-```env
-BONZAI_API_KEY=your-key-here
-```
+That's it — Bonzai is now your active provider.
 
 ## What the installer does
 
-`install.py` is fully idempotent and does everything automatically:
+`install.py` is fully idempotent and handles the plumbing automatically:
 
 1. Copies the plugin into `~/.hermes/plugins/model-providers/bonzai/`
    (auto-discovered by Hermes — no `plugins enable` needed)
@@ -63,14 +71,8 @@ BONZAI_API_KEY=your-key-here
 3. Clears the model cache so the new provider shows up
 
 It honors the `HERMES_HOME` environment variable and falls back to `~/.hermes`.
-
-After installing, restart Hermes (or `hermes gateway restart`), then run:
-
-```bash
-hermes model
-```
-
-Select the `bonzai` provider (or use `/model` inside the TUI / desktop app).
+The API key itself is handled by `hermes model` in step 2 above, not by the
+installer.
 
 ## Updating
 
