@@ -11,6 +11,7 @@ Windows Terminal, Terminal.app, or any shell with Python 3.
 - [Hermes Agent](https://hermes-agent.nousresearch.com/) installed (desktop app or CLI)
 - Python 3 (ships with Hermes)
 - `git` (for the one-command install)
+- A Bonzai API key — get one at [bonzai.iodigital.com](https://bonzai.iodigital.com/)
 
 You do **not** need to manually add an API key — `hermes model` asks for your
 `BONZAI_API_KEY` during setup and stores it for you (see step 2 below).
