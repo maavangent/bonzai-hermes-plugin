@@ -170,8 +170,19 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
 class BonzaiProfile(ProviderProfile):
     """Bonzai (api-v2.bonzai.iodigital.com) provider profile."""
 
-    def fetch_models(self, *, api_key: str | None = None, timeout: float = 8.0):
-        """Fetch live, build smart shortlist, and cache."""
+    def fetch_models(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 8.0,
+    ) -> list[str] | None:
+        """Fetch live, build smart shortlist, and cache.
+
+        Returns a list of model IDs on success, or None on failure so the
+        caller can fall back to the static _PROVIDER_MODELS list (base class
+        contract as of Hermes 0.16+).
+        """
         now = time.time()
 
         if _CACHE["models"] and (now - _CACHE["ts"]) < _CACHE_TTL:
@@ -182,7 +193,7 @@ class BonzaiProfile(ProviderProfile):
 
         if not api_key:
             logger.warning("Bonzai: no API key available for model fetch")
-            return list(self.fallback_models)
+            return None
 
         url = "https://api-v2.bonzai.iodigital.com/v1/models"
 
@@ -197,7 +208,7 @@ class BonzaiProfile(ProviderProfile):
         # issuer and raise CERTIFICATE_VERIFY_FAILED. Prefer certifi's
         # up-to-date bundle when available; otherwise fall back to the
         # system default. We NEVER disable verification — on failure the
-        # except-block below returns the static fallback model list.
+        # except-block below returns None (caller uses fallback models).
         try:
             import certifi
             ctx = ssl.create_default_context(cafile=certifi.where())
@@ -221,7 +232,7 @@ class BonzaiProfile(ProviderProfile):
         except Exception as exc:
             logger.warning("Bonzai live model fetch failed: %s", exc)
 
-        return list(self.fallback_models)
+        return None
 
 
 bonzai = BonzaiProfile(
