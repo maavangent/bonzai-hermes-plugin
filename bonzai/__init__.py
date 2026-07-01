@@ -77,6 +77,10 @@ def _claude_identity(m: str):
     cm = re.match(r"^claude-(\d+)-(sonnet|opus|haiku)$", m)
     if cm:
         return f"claude-{cm.group(2)}-{cm.group(1)}", (int(cm.group(1)), 0)
+    # claude-sonnet-5 style (family-major, no minor version)
+    cm = re.match(r"^claude-(sonnet|opus|haiku)-(\d+)$", m)
+    if cm:
+        return f"claude-{cm.group(1)}-{cm.group(2)}", (int(cm.group(2)), 0)
     return None, None
 
 
