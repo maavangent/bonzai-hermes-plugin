@@ -122,6 +122,32 @@ ships **no** `fallback_models`: Hermes merges that tuple *ahead* of the live lis
 which would pin a stale hand-written order to the top of the picker and bury
 newly released flagships.
 
+### Output-token limits
+
+Hermes asks the provider profile for a default `max_tokens` value on every call.
+Bonzai fronts backends with different ceilings and does **not** clamp an
+oversized request: it returns HTTP 400. Live probing found:
+
+| Model | Bonzai ceiling | Previous behaviour |
+|---|---:|---|
+| `gpt-4o` | 16,384 | Every call failed: plugin sent 32,768 |
+| `gpt-4o-mini` | 16,384 | Every call failed: plugin sent 32,768 |
+| Other tested models | ≥32,768 | Keep the 32,768 default |
+
+`BonzaiProfile.get_max_tokens()` now applies the measured 16k cap to those two
+models while unknown and newly released models keep the generous 32k default.
+Re-probe after Bonzai adds or reroutes models:
+
+```bash
+python3 tools/probe_max_tokens.py --all
+```
+
+The script makes one tiny completion per model and prints a ready-to-paste
+`_MODEL_MAX_TOKENS` dict. It also surfaces server-side failures that are not
+limit-related. On 30 July 2026 it found all four Gemini routes returning HTTP
+500 `invalid_grant: Invalid JWT Signature`; that is a Bonzai backend credential
+problem, not something this plugin can repair.
+
 ### Desktop app: new models start hidden
 
 This is Hermes core behaviour, not something the plugin controls. The desktop

@@ -256,8 +256,51 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
 
 
 
+# Per-model completion-token ceilings, MEASURED against the live API (a request
+# with max_tokens=32768 returns the model's real limit in the 400 body). Only
+# models whose ceiling is BELOW default_max_tokens need an entry; everything
+# else accepts the generous default. Re-probe after Bonzai adds a backend:
+#   python3 tools/probe_max_tokens.py <model> [<model> ...]
+_MODEL_MAX_TOKENS: dict = {
+    "gpt-4o": 16384,
+    "gpt-4o-mini": 16384,
+}
+
+
+def _max_tokens_key(model: str | None) -> str:
+    """Normalize a model id for _MODEL_MAX_TOKENS lookup.
+
+    A user can have a date-pinned or backend-routed spelling saved in config
+    (``gpt-4o-2024-08-06``, ``gpt-4o-mini-bedrock``) even though the picker
+    hides those. They share the upstream model's limit, so strip the suffixes
+    the catalog treats as noise before looking the cap up.
+    """
+    m = (model or "").strip().lower()
+    m = re.sub(r"-(bedrock|vertex)$", "", m)
+    m = re.sub(r"-\d{8}$", "", m)
+    m = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", m)
+    return m
+
+
 class BonzaiProfile(ProviderProfile):
     """Bonzai (api-v2.bonzai.iodigital.com) provider profile."""
+
+    def get_max_tokens(self, model: str | None) -> int | None:
+        """Per-model completion-token ceiling, falling back to the default.
+
+        Bonzai fronts several upstream backends with different limits, and it
+        does NOT clamp an over-large request — it 400s. Measured against the
+        live API: ``max_tokens=32768`` on gpt-4o / gpt-4o-mini returns
+        "AzureException BadRequestError - max_tokens is too large: 32768. This
+        model supports at most 16384 completion tokens", so every call to those
+        models failed outright with the flat 32k default.
+
+        Unknown models keep ``default_max_tokens``: a new model is far more
+        likely to support MORE output than less, and capping it on a guess
+        would silently truncate long writes.
+        """
+        cap = _MODEL_MAX_TOKENS.get(_max_tokens_key(model))
+        return cap if cap is not None else self.default_max_tokens
 
     def fetch_models(
         self,
