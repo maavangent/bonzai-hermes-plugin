@@ -1,6 +1,8 @@
 """Bonzai API provider for iO
 
-Returns a clean, smart shortlist with only the latest models available through the Bonzai API.
+Builds a two-tier picker list from the live Bonzai catalog: the two newest
+versions of every model family up top, everything else still callable below a
+separator. See README ("Which models you see") for the full rules.
 """
 
 from __future__ import annotations
@@ -27,6 +29,47 @@ logger = logging.getLogger(__name__)
 
 _CACHE: dict = {"models": None, "ts": 0}
 _CACHE_TTL = 60
+
+# Disk cache filename. The in-process _CACHE dies with the process, so a
+# freshly started Hermes with no network would otherwise fall back to a
+# hand-written list. See _load_offline_models for why that matters.
+_OFFLINE_CACHE_NAME = "bonzai_models_cache.json"
+
+
+def _offline_cache_path():
+    """Path of the last-known-good model list, honouring HERMES_HOME."""
+    from pathlib import Path
+
+    home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    return Path(home) / _OFFLINE_CACHE_NAME
+
+
+def _store_offline_models(models: list) -> None:
+    """Persist a successful fetch. Best-effort: never breaks a good fetch."""
+    try:
+        path = _offline_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"models": list(models), "ts": time.time()}))
+    except Exception as exc:  # pragma: no cover - disk/permission edge
+        logger.debug("Bonzai: could not persist offline model cache: %s", exc)
+
+
+def _load_offline_models():
+    """Return the last successfully fetched list, or None.
+
+    Preferred over a hardcoded ``fallback_models`` tuple: the file is written
+    from the live API, so an offline start still shows the real catalog in the
+    order this plugin curated, instead of a snapshot that goes stale silently.
+    A missing, unreadable or corrupt file simply yields None.
+    """
+    try:
+        data = json.loads(_offline_cache_path().read_text())
+        models = data.get("models")
+        if isinstance(models, list) and models:
+            return [m for m in models if isinstance(m, str)]
+    except Exception:
+        return None
+    return None
 
 
 # Pure duplicates / non-selectable ids that should never appear in the picker:
@@ -58,6 +101,17 @@ _FAMILY_ORDER = [
     "gemini-pro", "gemini-flash",
     "glm", "mistral-codestral", "mistral-devstral",
 ]
+
+# How many VERSIONS of each family lead the picker. Two, so a newly released
+# flagship is visible immediately while the previous version — still the safe,
+# proven pick — stays one keystroke away instead of below the separator.
+# Counted per version, not per model id: when a single version ships as several
+# named variants (gpt-5.6-luna / -sol / -terra) all of them come along.
+_TIER1_VERSIONS_PER_FAMILY = 2
+
+# Suffixes that mark a cheaper/faster derivative rather than a new flagship.
+# These never occupy a tier-1 slot; they stay reachable below the separator.
+_LIGHTWEIGHT_SUFFIX = re.compile(r"-(mini|nano|lite|flash|fast|small|tiny)$")
 
 
 def _claude_identity(m: str):
@@ -94,6 +148,11 @@ def _tier1_family(m: str):
         return "-".join(key.split("-")[:2]), ver  # claude-opus / -sonnet / -haiku
     if re.match(r"^gpt-5(?:\.\d+)?$", m):
         return "gpt-5", (float(m.split("-")[1]),)
+    # Named GPT variants belong to their numeric generation. All variants of
+    # a selected version are promoted together by _build_smart_shortlist.
+    g = re.match(r"^gpt-(5(?:\.\d+)?)-([a-z][a-z0-9-]*)$", m)
+    if g and not _LIGHTWEIGHT_SUFFIX.search(m):
+        return "gpt-5", (float(g.group(1)),)
     if m == "gpt-4o":
         return "gpt-4", (4.0,)
     if re.match(r"^gpt-4\.\d+$", m):
@@ -148,17 +207,28 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
         else:
             kept.append(m)
 
-    # 2. Tier 1: newest flagship per family, in display order.
+    # 2. Tier 1: the _TIER1_VERSIONS_PER_FAMILY newest versions per family,
+    #    in display order. A version that ships as several named variants
+    #    (gpt-5.6-luna / -sol / -terra) contributes all of them, because they
+    #    are one release the user must be able to choose between.
     groups: dict = defaultdict(list)
     for m in kept:
         fam, ver = _tier1_family(m)
         if fam:
             groups[fam].append((ver, m))
-    tier1: list[str] = [
-        sorted(groups[f], reverse=True)[0][1]
-        for f in _FAMILY_ORDER if f in groups
-    ]
 
+    tier1: list[str] = []
+    for fam in _FAMILY_ORDER:
+        if fam not in groups:
+            continue
+        by_version: dict = defaultdict(list)
+        for ver, m in groups[fam]:
+            by_version[ver].append(m)
+        newest = sorted(by_version, reverse=True)[:_TIER1_VERSIONS_PER_FAMILY]
+        for ver in newest:
+            tier1.extend(sorted(by_version[ver]))
+
+    # Families the regexes don't know are NOT dropped — tier 2 collects them.
     # 3. Tier 2: everything else, sorted alphabetically.
     tier1_set = set(tier1)
     tier2 = sorted(m for m in kept if m not in tier1_set)
@@ -230,12 +300,17 @@ class BonzaiProfile(ProviderProfile):
                 shortlist = _build_smart_shortlist(raw_models)
                 _CACHE["models"] = shortlist
                 _CACHE["ts"] = now
+                _store_offline_models(shortlist)
                 logger.info("Bonzai: smart shortlist built with %d models", len(shortlist))
                 return shortlist
 
         except Exception as exc:
             logger.warning("Bonzai live model fetch failed: %s", exc)
 
+        cached = _load_offline_models()
+        if cached:
+            logger.info("Bonzai: using last-known-good model list (%d models)", len(cached))
+            return cached
         return None
 
 
@@ -261,15 +336,13 @@ bonzai = BonzaiProfile(
     # for large writes (full files, plans, long refactors). The old 8192 cut
     # off long Claude/GPT responses.
     default_max_tokens=32768,
-    fallback_models=(
-        "claude-sonnet-4-6",
-        "claude-opus-4-8",
-        "claude-haiku-4-5",
-        "gpt-5.5",
-        "gpt-4o",
-        "o3",
-        "o1",
-    ),
+    # Deliberately EMPTY. Hermes merges fallback_models AHEAD of the live list
+    # (hermes_cli/models.py::provider_model_ids), so any hand-written tuple here
+    # pins a stale order to the top of the picker and buries newly released
+    # flagships — claude-sonnet-4-6 outranked claude-opus-5 for exactly this
+    # reason. Offline resilience is handled by the disk cache written from real
+    # fetches (_store_offline_models) instead of a snapshot that rots silently.
+    fallback_models=(),
 )
 
 register_provider(bonzai)

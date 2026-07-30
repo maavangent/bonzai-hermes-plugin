@@ -92,7 +92,7 @@ def add_overlay() -> None:
         log(f"{WARN}Could not locate HERMES_OVERLAYS dict — add overlay manually (see README).")
         return
 
-    new_block = m.group(1) + m.group(2) + "\n" + OVERLAY + m.group(3)
+    new_block = m.group(1) + m.group(2) + "\n" + OVERLAY.rstrip("\n") + m.group(3)
     new_content = content[: m.start()] + new_block + content[m.end():]
 
     if new_content == content:
@@ -101,6 +101,19 @@ def add_overlay() -> None:
 
     PROVIDERS_FILE.write_text(new_content, encoding="utf-8")
     log(f"{OK}HermesOverlay entry added to providers.py")
+
+
+def overlay_missing() -> bool:
+    """True when providers.py exists but carries no 'bonzai' overlay.
+
+    A major ``hermes update`` replaces the Hermes source tree, which silently
+    drops the injected entry. Without the overlay ``resolve_provider_full()``
+    returns None and `/model` reports "Unknown provider 'bonzai'" even though
+    the plugin itself loaded fine. Used by --check to detect that state.
+    """
+    if not PROVIDERS_FILE.is_file():
+        return False
+    return '"bonzai"' not in PROVIDERS_FILE.read_text(encoding="utf-8")
 
 
 def remove_overlay() -> None:
@@ -204,19 +217,62 @@ def do_update() -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def do_check() -> int:
+    """Diagnose the installation. Returns a process exit code.
+
+    Catches the two silent-failure modes that look identical to the user
+    ("bonzai is gone from the picker") but need different fixes:
+      1. plugin dir missing        -> never installed / wiped
+      2. overlay missing           -> a `hermes update` replaced providers.py
+    """
+    problems = 0
+
+    if PLUGIN_DIR.is_dir():
+        log(f"{OK}Plugin installed at {PLUGIN_DIR}")
+    else:
+        log(f"{WARN}Plugin NOT installed (expected {PLUGIN_DIR})")
+        problems += 1
+
+    if not PROVIDERS_FILE.is_file():
+        log(f"{INFO}No Hermes source tree at {PROVIDERS_FILE} — skipping overlay check.")
+    elif overlay_missing():
+        log(f"{WARN}HermesOverlay entry is MISSING from providers.py.")
+        log("   A `hermes update` most likely replaced the file.")
+        log("   Without it /model reports \"Unknown provider 'bonzai'\".")
+        problems += 1
+    else:
+        log(f"{OK}HermesOverlay entry present in providers.py")
+
+    if problems:
+        log("")
+        log(f"{INFO}Fix with:  python install.py")
+        return 1
+
+    log("")
+    log(f"{OK}Bonzai plugin looks healthy.")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Install, update or uninstall the Bonzai Hermes plugin.",
+        description="Install, update, check or uninstall the Bonzai Hermes plugin.",
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--update", action="store_true", help="git pull + reinstall")
     group.add_argument("--uninstall", action="store_true", help="remove plugin, overlay and cache")
+    group.add_argument(
+        "--check",
+        action="store_true",
+        help="diagnose the install (detects an overlay dropped by `hermes update`)",
+    )
     args = parser.parse_args()
 
     if args.uninstall:
         do_uninstall()
     elif args.update:
         do_update()
+    elif args.check:
+        sys.exit(do_check())
     else:
         do_install()
 

@@ -75,6 +75,55 @@ It honors the `HERMES_HOME` environment variable and falls back to `~/.hermes`.
 The API key itself is handled by `hermes model` in step 2 above, not by the
 installer.
 
+## Health check
+
+```bash
+python install.py --check
+```
+
+Reports whether the plugin directory and the `HermesOverlay` entry are both
+in place, and exits non-zero when something is wrong. Worth running after every
+`hermes update`: a major update replaces the Hermes source tree and silently
+drops the overlay, after which `/model` reports *"Unknown provider 'bonzai'"*
+even though the plugin itself loaded fine. `python install.py` repairs it.
+
+## Which models you see
+
+`fetch_models` builds a two-tier picker list from the live Bonzai catalog:
+
+- **Tier 1** — the **two newest versions of every family** (Opus 5 + 4.8,
+  Sonnet 5 + 4.6, GPT-5.6 + 5.5, …). When one version ships as several named
+  variants (`gpt-5.6-luna` / `-sol` / `-terra`) all of them come along, since
+  they are one release you need to choose between.
+- **Separator line**
+- **Tier 2** — everything else that is still callable: older versions and the
+  lightweight tiers (`-mini`, `-nano`, `-flash`, `-lite`).
+
+Hidden entirely: pure duplicates (`-bedrock` / `-vertex` routes, `eu.anthropic.*`
+prefixes, date-stamped snapshots), compliance-bypassing `uncompliant-global-*`
+models, and non-chat models (image / TTS / whisper / embeddings / rerank).
+
+New families are never dropped — anything the regexes don't recognise falls
+through to tier 2 instead of disappearing.
+
+Every successful fetch is also written to `$HERMES_HOME/bonzai_models_cache.json`.
+An offline start reuses that last-known-good list, so the plugin deliberately
+ships **no** `fallback_models`: Hermes merges that tuple *ahead* of the live list,
+which would pin a stale hand-written order to the top of the picker and bury
+newly released flagships.
+
+### Desktop app: new models start hidden
+
+This is Hermes core behaviour, not something the plugin controls. The desktop
+model dropdown persists an explicit visible-model set the first time you toggle
+anything (`hermes.desktop.visible-models` in localStorage). From then on a model
+the provider adds *later* is **not** auto-enabled — Hermes only expands its
+curated defaults for providers you have never customised.
+
+So after a new Bonzai model appears, open the model dropdown → **Edit models**
+and switch it on once. The plugin's job is to put it at the top of the list,
+which it now does.
+
 ## Updating
 
 ```bash
