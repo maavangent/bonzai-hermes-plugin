@@ -109,6 +109,16 @@ _FAMILY_ORDER = [
 # named variants (gpt-5.6-luna / -sol / -terra) all of them come along.
 _TIER1_VERSIONS_PER_FAMILY = 2
 
+# Claude ids that spell the version BEFORE the family (claude-3-haiku,
+# claude-4-sonnet). The desktop picker derives its label straight from the model
+# id, so these render as "3 Haiku" / "4 Sonnet" next to "Haiku 4 5" — the same
+# family in two different word orders. We cannot rewrite them: the string we
+# return is also the id sent to the API, and `claude-haiku-3` is not a model
+# Bonzai serves. So a version-first id is shown ONLY when the API exposes no
+# family-first spelling for that same model (dedupe keeps the clean one); when
+# it is the only spelling it is dropped rather than shown inconsistently.
+_CLAUDE_VERSION_FIRST = re.compile(r"^claude-\d+(?:-\d+)?-(sonnet|opus|haiku)$")
+
 # Suffixes that mark a cheaper/faster derivative rather than a new flagship.
 # These never occupy a tier-1 slot; they stay reachable below the separator.
 _LIGHTWEIGHT_SUFFIX = re.compile(r"-(mini|nano|lite|flash|fast|small|tiny)$")
@@ -206,6 +216,11 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
             kept.append(m)
         else:
             kept.append(m)
+
+    # 1b. Any version-first Claude id still standing had no family-first
+    #     counterpart to be deduped against, so showing it would put a second
+    #     word order ("3 Haiku") next to "Haiku 4 5" in the picker.
+    kept = [m for m in kept if not _CLAUDE_VERSION_FIRST.match(m)]
 
     # 2. Tier 1: the _TIER1_VERSIONS_PER_FAMILY newest versions per family,
     #    in display order. A version that ships as several named variants

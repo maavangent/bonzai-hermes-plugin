@@ -103,6 +103,16 @@ Hidden entirely: pure duplicates (`-bedrock` / `-vertex` routes, `eu.anthropic.*
 prefixes, date-stamped snapshots), compliance-bypassing `uncompliant-global-*`
 models, and non-chat models (image / TTS / whisper / embeddings / rerank).
 
+Also hidden: **version-first Claude ids** (`claude-3-haiku`, `claude-4-sonnet`).
+The desktop picker builds its label straight from the model id, so these render
+as *"3 Haiku"* / *"4 Sonnet"* right next to *"Haiku 4 5"* — the same family in two
+word orders. The id cannot be rewritten to fix the label, because the string
+returned by `fetch_models` is also the id sent to the API (`claude-haiku-3` is not
+a model Bonzai serves). When the API exposes both spellings the clean
+family-first one wins the dedupe; when version-first is the *only* spelling the
+model is dropped rather than shown inconsistently. Everything visible therefore
+reads `[name] [version]`.
+
 New families are never dropped — anything the regexes don't recognise falls
 through to tier 2 instead of disappearing.
 

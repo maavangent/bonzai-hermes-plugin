@@ -45,7 +45,7 @@ def test_anthropic_families_show_their_two_newest_versions():
         "claude-sonnet-4-5",
         "claude-sonnet-4-6",
         "claude-sonnet-5",
-        "claude-3-haiku",
+        "claude-haiku-4-4",
         "claude-haiku-4-5",
     ]
 
@@ -55,7 +55,7 @@ def test_anthropic_families_show_their_two_newest_versions():
         "claude-sonnet-5",
         "claude-sonnet-4-6",
         "claude-haiku-4-5",
-        "claude-3-haiku",
+        "claude-haiku-4-4",
     ]
 
 
@@ -116,3 +116,27 @@ def test_older_versions_remain_reachable_below_the_separator():
     assert "claude-opus-4-7" in shown
     assert "claude-opus-4-6" in shown
     assert shown.index(SEPARATOR) < shown.index("claude-opus-4-7")
+
+
+def test_version_first_claude_ids_without_a_clean_alias_are_hidden():
+    raw = [
+        "claude-haiku-4-5",
+        "claude-3-haiku",
+        "claude-sonnet-4-6",
+        "claude-4-sonnet",
+    ]
+
+    shown = module._build_smart_shortlist(raw)
+
+    assert "claude-haiku-4-5" in shown
+    assert "claude-sonnet-4-6" in shown
+    assert "claude-3-haiku" not in shown
+    assert "claude-4-sonnet" not in shown
+
+
+def test_clean_claude_id_wins_when_both_naming_orders_exist():
+    raw = ["claude-4-8-opus", "claude-opus-4-8"]
+
+    shown = module._build_smart_shortlist(raw)
+
+    assert shown == ["claude-opus-4-8"]
