@@ -25,14 +25,13 @@ def test_status_chip_tracks_session_provider_events():
     assert 'provider === "bonzai"' in source
 
 
-def test_desktop_plugin_uses_generic_session_credential_rpc_contract():
+def test_desktop_plugin_uses_model_dispatch_contract():
     source = PLUGIN.read_text()
 
-    assert 'host.request("session.credential.set"' in source
-    assert 'host.request("session.credential.clear"' in source
+    assert 'host.request("command.dispatch"' in source
+    assert 'name: "model"' in source
     assert "host.state.activeSessionId" in source
-    assert 'provider: "bonzai"' in source
-    assert "credential_id:" in source
+    assert "session_id:" in source
 
 
 def test_desktop_plugin_exposes_automatic_and_pinned_session_modes():

@@ -239,6 +239,34 @@ function CredentialCard({ ctx, entry, index, busy, onChanged }) {
       "Credential removed.",
     );
 
+  const activate = async () => {
+    const slug =
+      label === "BONZAI_API_KEY"
+        ? "io"
+        : label
+            .toLowerCase()
+            .replace(/[\s_]+/g, "-")
+            .replace(/[^a-z0-9-]/g, "");
+    const sid = host.state.activeSessionId.get();
+    if (!sid) return;
+    try {
+      await host.request("command.dispatch", {
+        name: "model",
+        arg: slug,
+        session_id: sid,
+      });
+      host.notify({
+        kind: "success",
+        message: `Switched session to /model ${slug}`,
+      });
+    } catch (err) {
+      host.notify({
+        kind: "error",
+        message: `Could not switch model: ${messageOf(err)}`,
+      });
+    }
+  };
+
   return jsxs("div", {
     style: styles.card,
     children: [
@@ -304,6 +332,13 @@ function CredentialCard({ ctx, entry, index, busy, onChanged }) {
         : jsxs("div", {
             style: styles.row,
             children: [
+              jsx(Button, {
+                disabled: busy,
+                onClick: activate,
+                size: "xs",
+                variant: "outline",
+                children: "Use in Chat",
+              }),
               jsx(Button, {
                 disabled: busy,
                 onClick: test,
@@ -433,14 +468,24 @@ function Manager({ ctx }) {
       });
       return;
     }
+    const entry = credentials.find(
+      (c, idx) => credentialId(c, idx) === value,
+    );
+    const label = entry ? credentialLabel(entry, 0) : "";
+    const slug =
+      value === "automatic" || label === "BONZAI_API_KEY"
+        ? "io"
+        : label
+            .toLowerCase()
+            .replace(/[\s_]+/g, "-")
+            .replace(/[^a-z0-9-]/g, "");
+
     await action.run(`session:${value}`, () =>
-      value === "automatic"
-        ? host.request("session.credential.clear", { session_id: activeSessionId })
-        : host.request("session.credential.set", {
-            session_id: activeSessionId,
-            provider: "bonzai",
-            credential_id: value,
-          }),
+      host.request("command.dispatch", {
+        name: "model",
+        arg: slug,
+        session_id: activeSessionId,
+      }),
     );
     sessionStatus.set({
       ...sessionStatus.get(),
@@ -451,10 +496,7 @@ function Manager({ ctx }) {
     });
     host.notify({
       kind: "success",
-      message:
-        value === "automatic"
-          ? "This session now uses automatic rotation."
-          : "API key pinned to this session.",
+      message: `Switched session to /model ${slug}`,
     });
   };
 

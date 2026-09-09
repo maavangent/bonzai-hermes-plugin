@@ -355,9 +355,10 @@ def configure_bonzai_defaults(api_key: str | None = None) -> None:
     log(f"{OK}Bonzai configured as default provider with 'gemini-3.7-flash' in {CONFIG_FILE}")
 
 
-def add_client_alias(name: str, api_key: str, model: str = "gemini-3.7-flash") -> None:
-    """Add a client-specific API key and alias."""
-    clean_name = re.sub(r"[^a-zA-Z0-9_-]", "", name.strip().lower())
+def add_client_alias(name: str, api_key: str, model: str = "gemini-3.7-flash") -> str:
+    """Add a client-specific API key and alias, converting spaces to hyphens."""
+    clean_name = re.sub(r"[\s_]+", "-", name.strip().lower())
+    clean_name = re.sub(r"[^a-z0-9-]", "", clean_name).strip("-")
     if not clean_name:
         raise ValueError("Invalid alias name. Please use letters, numbers, and hyphens only.")
 
@@ -380,6 +381,7 @@ def add_client_alias(name: str, api_key: str, model: str = "gemini-3.7-flash") -
     _save_config(config)
     log(f"{OK}Client alias '{clean_name}' added to {CONFIG_FILE}")
     log(f"{INFO}Use directly in chat: /model {clean_name}")
+    return clean_name
 
 
 # ---------------------------------------------------------------------------

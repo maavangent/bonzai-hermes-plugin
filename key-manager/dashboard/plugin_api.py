@@ -1,13 +1,16 @@
 """Secret-safe backend API for the Bonzai Key Manager dashboard."""
 from __future__ import annotations
 
+import re
 import urllib.error
 import urllib.request
 import uuid
 from dataclasses import replace
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator
+from hermes_constants import get_hermes_home
 
 # Importing the provider is necessary when this dashboard plugin is loaded before
 # Hermes has discovered model-provider plugins in the current process.
@@ -151,6 +154,48 @@ def list_credentials() -> dict:
     }
 
 
+def _sync_alias_for_label(label: str, api_key: str) -> None:
+    """Sync an alias in config.yaml when a credential is added via the UI."""
+    slug = re.sub(r"[\s_]+", "-", label.strip().lower())
+    slug = re.sub(r"[^a-z0-9-]", "", slug).strip("-")
+    if not slug or slug in ("bonzai-api-key", "default", "io"):
+        return
+
+    try:
+        hermes_home = get_hermes_home()
+        env_file = hermes_home / ".env"
+        env_var = f"BONZAI_{slug.upper().replace('-', '_')}_API_KEY"
+
+        lines = []
+        found = False
+        if env_file.is_file():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if not s.startswith("#") and "=" in s:
+                    k, _ = s.split("=", 1)
+                    if k.strip() == env_var:
+                        lines.append(f"{env_var}={api_key.strip()}")
+                        found = True
+                        continue
+                lines.append(line)
+        if not found:
+            lines.append(f"{env_var}={api_key.strip()}")
+        env_file.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+
+        cfg = load_config()
+        aliases = cfg.setdefault("model_aliases", {})
+        if isinstance(aliases, dict):
+            aliases[slug] = {
+                "model": "gemini-3.7-flash",
+                "provider": "custom",
+                "base_url": INFERENCE_BASE_URL.rstrip("/"),
+                "key_env": env_var,
+            }
+            save_config(cfg)
+    except Exception:
+        pass
+
+
 @router.post("/credentials", status_code=201)
 def add_credential(request: AddCredentialRequest) -> dict:
     _ensure_provider_config()
@@ -164,6 +209,7 @@ def add_credential(request: AddCredentialRequest) -> dict:
         source="manual",
         access_token=request.api_key,
     ))
+    _sync_alias_for_label(request.label, request.api_key)
     return {"credential": _public_credential(entry)}
 
 
