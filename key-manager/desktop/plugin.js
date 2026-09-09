@@ -248,16 +248,22 @@ function CredentialCard({ ctx, entry, index, busy, onChanged }) {
             .replace(/[\s_]+/g, "-")
             .replace(/[^a-z0-9-]/g, "");
     const sid = host.state.activeSessionId.get();
-    if (!sid) return;
+    if (!sid) {
+      host.notify({
+        kind: "warning",
+        message: "No active chat session selected.",
+      });
+      return;
+    }
     try {
-      await host.request("command.dispatch", {
-        name: "model",
-        arg: slug,
+      const res = await host.request("slash.exec", {
+        command: `/model ${slug}`,
         session_id: sid,
       });
+      const output = unwrap(res)?.output || "";
       host.notify({
         kind: "success",
-        message: `Switched session to /model ${slug}`,
+        message: output || `Switched session to /model ${slug}`,
       });
     } catch (err) {
       host.notify({
@@ -481,9 +487,8 @@ function Manager({ ctx }) {
             .replace(/[^a-z0-9-]/g, "");
 
     await action.run(`session:${value}`, () =>
-      host.request("command.dispatch", {
-        name: "model",
-        arg: slug,
+      host.request("slash.exec", {
+        command: `/model ${slug}`,
         session_id: activeSessionId,
       }),
     );

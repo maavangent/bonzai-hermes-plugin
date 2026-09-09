@@ -25,11 +25,11 @@ def test_status_chip_tracks_session_provider_events():
     assert 'provider === "bonzai"' in source
 
 
-def test_desktop_plugin_uses_model_dispatch_contract():
+def test_desktop_plugin_uses_slash_exec_contract():
     source = PLUGIN.read_text()
 
-    assert 'host.request("command.dispatch"' in source
-    assert 'name: "model"' in source
+    assert 'host.request("slash.exec"' in source
+    assert "`/model ${slug}`" in source
     assert "host.state.activeSessionId" in source
     assert "session_id:" in source
 
