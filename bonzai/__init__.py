@@ -1,8 +1,8 @@
 """Bonzai API provider for iO
 
-Builds a two-tier picker list from the live Bonzai catalog: the two newest
-versions of every model family up top, everything else still callable below a
-separator. See README ("Which models you see") for the full rules.
+Builds an ordered picker list from the live Bonzai catalog: the two newest
+versions of every model family up top, followed by everything else callable.
+See README ("Which models you see") for the full rules.
 """
 
 from __future__ import annotations
@@ -90,10 +90,6 @@ _NON_CHAT = re.compile(
     re.IGNORECASE,
 )
 
-# Visual separator between tier 1 (flagships) and tier 2 (everything else).
-# Not a real model id — selecting it just fails the switch harmlessly.
-_SEPARATOR = "────────────────────────────────"
-
 # Display order of families in tier 1 (newest of each shown up top).
 _FAMILY_ORDER = [
     "claude-opus", "claude-sonnet", "claude-haiku",
@@ -104,7 +100,7 @@ _FAMILY_ORDER = [
 
 # How many VERSIONS of each family lead the picker. Two, so a newly released
 # flagship is visible immediately while the previous version — still the safe,
-# proven pick — stays one keystroke away instead of below the separator.
+# proven pick — stays one keystroke away instead of later in the list.
 # Counted per version, not per model id: when a single version ships as several
 # named variants (gpt-5.6-luna / -sol / -terra) all of them come along.
 _TIER1_VERSIONS_PER_FAMILY = 2
@@ -120,7 +116,7 @@ _TIER1_VERSIONS_PER_FAMILY = 2
 _CLAUDE_VERSION_FIRST = re.compile(r"^claude-\d+(?:-\d+)?-(sonnet|opus|haiku)$")
 
 # Suffixes that mark a cheaper/faster derivative rather than a new flagship.
-# These never occupy a tier-1 slot; they stay reachable below the separator.
+# These never occupy a tier-1 slot; they stay reachable later in the list.
 _LIGHTWEIGHT_SUFFIX = re.compile(r"-(mini|nano|lite|flash|fast|small|tiny)$")
 
 
@@ -185,7 +181,6 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
     """Build a two-tier picker list.
 
     Tier 1: the newest flagship chat model per family (Claude/GPT/Gemini/...).
-    Separator line.
     Tier 2: every other selectable chat model — older versions and lightweight
     tiers (mini/nano/flash).
 
@@ -248,11 +243,7 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
     tier1_set = set(tier1)
     tier2 = sorted(m for m in kept if m not in tier1_set)
 
-    result = list(tier1)
-    if tier2:
-        result.append(_SEPARATOR)
-        result.extend(tier2)
-    return result
+    return tier1 + tier2
 
 
 
