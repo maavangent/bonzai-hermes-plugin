@@ -6,6 +6,14 @@ Works on **macOS, Linux and Windows**.
 
 ---
 
+## Prerequisites
+
+Before installing the Bonzai plugin, make sure you have:
+1. **[Hermes Desktop App](https://hermes-agent.nousresearch.com/)** installed on your computer.
+2. A **Bonzai API Key** from [bonzai.iodigital.com](https://bonzai.iodigital.com/).
+
+---
+
 ## Installation
 
 Choose the method that works best for you:
