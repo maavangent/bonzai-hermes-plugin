@@ -240,13 +240,6 @@ function CredentialCard({ ctx, entry, index, busy, onChanged }) {
     );
 
   const activate = async () => {
-    const slug =
-      label === "BONZAI_API_KEY"
-        ? "io"
-        : label
-            .toLowerCase()
-            .replace(/[\s_]+/g, "-")
-            .replace(/[^a-z0-9-]/g, "");
     const sid = host.state.activeSessionId.get();
     if (!sid) {
       host.notify({
@@ -256,6 +249,24 @@ function CredentialCard({ ctx, entry, index, busy, onChanged }) {
       return;
     }
     try {
+      let slug =
+        label === "BONZAI_API_KEY"
+          ? "io"
+          : label
+              .toLowerCase()
+              .replace(/[\s_]+/g, "-")
+              .replace(/[^a-z0-9-]/g, "");
+
+      try {
+        const res = await request(ctx, `/credentials/${encodeURIComponent(id)}/activate`, {
+          method: "POST",
+        });
+        const data = unwrap(res);
+        if (data?.slug) slug = data.slug;
+      } catch {
+        // Fallback to computed slug
+      }
+
       const res = await host.request("slash.exec", {
         command: `/model ${slug}`,
         session_id: sid,

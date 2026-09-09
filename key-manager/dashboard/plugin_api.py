@@ -144,10 +144,20 @@ def key_checker(api_key: str) -> dict:
         return {"ok": False, "status": 0, "error": "Unable to reach Bonzai"}
 
 
+def _sync_all_aliases(pool) -> None:
+    """Ensure all manual credentials in the pool have matching model_aliases."""
+    for entry in pool.entries():
+        label = str(getattr(entry, "label", "") or "")
+        api_key = str(getattr(entry, "runtime_api_key", "") or "").strip()
+        if _is_manual(getattr(entry, "source", "")) and label and api_key:
+            _sync_alias_for_label(label, api_key)
+
+
 @router.get("/credentials")
 def list_credentials() -> dict:
     _ensure_provider_config()
     pool = load_pool(PROVIDER)
+    _sync_all_aliases(pool)
     return {
         "credentials": [_public_credential(entry) for entry in pool.entries()],
         "strategy": get_pool_strategy(PROVIDER),
@@ -194,6 +204,24 @@ def _sync_alias_for_label(label: str, api_key: str) -> None:
             save_config(cfg)
     except Exception:
         pass
+
+
+@router.post("/credentials/{id}/activate")
+def activate_credential(id: str) -> dict:
+    """Ensure the alias exists in config and return the canonical slug to switch to."""
+    _ensure_provider_config()
+    pool = load_pool(PROVIDER)
+    entry = _entry_by_id(pool, id.strip())
+    label = str(getattr(entry, "label", "") or "")
+    api_key = str(getattr(entry, "runtime_api_key", "") or "").strip()
+    if label == "BONZAI_API_KEY":
+        slug = "io"
+    else:
+        slug = re.sub(r"[\s_]+", "-", label.strip().lower())
+        slug = re.sub(r"[^a-z0-9-]", "", slug).strip("-")
+        if _is_manual(getattr(entry, "source", "")) and api_key:
+            _sync_alias_for_label(label, api_key)
+    return {"slug": slug, "label": label}
 
 
 @router.post("/credentials", status_code=201)
