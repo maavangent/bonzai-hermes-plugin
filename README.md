@@ -6,51 +6,47 @@ Works on **macOS, Linux and Windows**.
 
 ---
 
-## Quick Start (For All Colleagues)
+## Installation
 
-### Option A: One-Click Launcher (Easiest — No Terminal Needed)
+Choose the method that works best for you:
 
-1. Download or clone this repository to your computer.
-2. Run the launcher for your operating system:
-   - **macOS:** Double-click `Install-Bonzai.command`
-   - **Windows:** Double-click `Install-Bonzai.cmd`
-3. Paste your Bonzai API key when prompted (grab one at [bonzai.iodigital.com](https://bonzai.iodigital.com/)).
-4. Open or restart **Hermes Desktop** — Bonzai is immediately ready with `gemini-3.7-flash` as your active default model!
+### Method 1: One-Line Terminal Command (Recommended)
 
----
+Copy and paste this single command into your terminal:
 
-### Option B: One-Command Terminal Install
-
-**macOS / Linux:**
-
+**macOS / Linux (Terminal):**
 ```bash
-git clone https://github.com/maavangent/bonzai-hermes-plugin /tmp/bonzai-plugin && \
-cd /tmp/bonzai-plugin && \
-python3 install.py --interactive && \
-rm -rf /tmp/bonzai-plugin
+git clone https://github.com/maavangent/bonzai-hermes-plugin /tmp/bonzai-plugin && cd /tmp/bonzai-plugin && python3 install.py --interactive && rm -rf /tmp/bonzai-plugin
 ```
 
 **Windows (PowerShell):**
-
 ```powershell
-git clone https://github.com/maavangent/bonzai-hermes-plugin $env:TEMP\bonzai-plugin; `
-cd $env:TEMP\bonzai-plugin; `
-python install.py --interactive; `
-cd ~; Remove-Item -Recurse -Force $env:TEMP\bonzai-plugin
+git clone https://github.com/maavangent/bonzai-hermes-plugin $env:TEMP\bonzai-plugin; cd $env:TEMP\bonzai-plugin; python install.py --interactive; cd ~; Remove-Item -Recurse -Force $env:TEMP\bonzai-plugin
 ```
+
+---
+
+### Method 2: Direct Download / One-Click Launcher (No Git Required)
+
+1. **[Download the ZIP file](https://github.com/maavangent/bonzai-hermes-plugin/archive/refs/heads/main.zip)** and extract it to your Downloads folder.
+2. Open the extracted `bonzai-hermes-plugin-main` folder and run the launcher for your operating system:
+   - **macOS:** Double-click **`Install-Bonzai-Model-Provider.command`**
+   - **Windows:** Double-click **`Install-Bonzai-Model-Provider.cmd`**
+3. When prompted, paste your Bonzai API key (grab one at [bonzai.iodigital.com](https://bonzai.iodigital.com/)).
+4. Open **Hermes Desktop** — Bonzai is immediately ready with **`gemini-3.7-flash`** as your active default model!
 
 ---
 
 ## Managing Keys in Hermes Desktop UI (Bonzai Key Manager)
 
-The plugin automatically installs the **Bonzai Key Manager** desktop extension. Once installed, you can manage your keys and client credentials directly inside the Hermes Desktop app:
+The plugin automatically installs the **Bonzai Key Manager** desktop extension:
 
-1. **Status Bar Chip (Bottom-Right):**  
-   Click the **🌿 Bonzai** chip in the bottom-right corner of Hermes Desktop to open a quick popover with your active credentials and rotation settings.
-2. **Dedicated Sidebar Pane:**  
+1. **Status Bar (Bottom-Right):**  
+   Click the **🌿 Bonzai** chip in the bottom-right corner of Hermes Desktop to view active credentials, test connections, and check health.
+2. **Right Sidebar Pane:**  
    Open the **Bonzai Keys** panel on the right sidebar to add, test, rename, or remove API keys with a visual form.
 3. **Command Palette (`⌘K` / `Ctrl+K`):**  
-   Type `Bonzai: Locate key manager` to instantly focus the key manager pane.
+   Type `Bonzai: Locate key manager` to immediately focus the key manager pane.
 
 ---
 
@@ -58,9 +54,9 @@ The plugin automatically installs the **Bonzai Key Manager** desktop extension. 
 
 Need to route Bonzai API costs to specific client accounts (e.g. Landal, Heineken)? You can set up named **client aliases** to switch seamlessly inside any chat session.
 
-### Method 1: Via the Setup Wizard (Recommended)
+### Option A: Via the Setup Wizard (Recommended)
 
-Run `python install.py --add-alias` (or select Option 2 in `Install-Bonzai.command` / `Install-Bonzai.cmd`):
+Run `python install.py --add-alias` (or select Option 2 in `Install-Bonzai-Model-Provider.command` / `.cmd`):
 
 ```text
 ====================================================
@@ -73,9 +69,9 @@ Preferred model [gemini-3.7-flash]: gemini-3.7-flash
 ✅ Client alias 'landal' added!
 ```
 
-### Method 2: Directly in Hermes Chat
+### Option B: Directly in Hermes Chat
 
-You can configure client keys directly in your chat:
+You can also configure client keys directly in your chat:
 
 1. Store the client's API key:
    ```text
@@ -102,7 +98,7 @@ You can configure client keys directly in your chat:
 
 If you or your colleagues already have an older version of the Bonzai plugin installed:
 
-- **Simply run `Install-Bonzai.command` (or `python install.py`) again.**
+- **Simply run the installer again.**
 - The installer is fully idempotent: it detects previous installations, replaces the plugin files with the latest version, refreshes the provider overlay, and **preserves your existing API keys and configurations**.
 - If an existing key is detected, the installer gives you the option to keep it, assign it to a client alias, or replace it.
 - Restart Hermes Desktop after updating.
@@ -125,7 +121,7 @@ It honors the `HERMES_HOME` environment variable and falls back to `~/.hermes`.
 
 ---
 
-## Health Check
+## Health Check & Troubleshooting
 
 Run a diagnostic check at any time:
 

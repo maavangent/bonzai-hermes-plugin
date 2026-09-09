@@ -364,8 +364,8 @@ def test_add_client_alias(tmp_path):
 
 
 def test_one_click_launchers_exist():
-    mac_launcher = INSTALLER.parent / "Install-Bonzai.command"
-    win_launcher = INSTALLER.parent / "Install-Bonzai.cmd"
+    mac_launcher = INSTALLER.parent / "Install-Bonzai-Model-Provider.command"
+    win_launcher = INSTALLER.parent / "Install-Bonzai-Model-Provider.cmd"
     assert mac_launcher.is_file()
     assert win_launcher.is_file()
 
