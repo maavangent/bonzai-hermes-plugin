@@ -184,8 +184,14 @@ function useAction() {
 
 function BonzaiStatusLabel() {
   const session = useValue(sessionStatus);
-  const credentialId = session.credential_binding?.credential_id;
-  const label = credentialId ? `Key ${credentialId}` : "Automatic";
+  let label = "iO";
+  if (session.alias) {
+    label = session.alias;
+  } else if (session.provider && session.provider !== "bonzai" && session.provider !== "custom") {
+    label = session.provider;
+  } else if (session.model) {
+    label = session.model;
+  }
   return jsxs("span", {
     style: { display: "inline-flex", alignItems: "center", gap: 5 },
     children: [jsx(StatusDot, { tone: "good" }), `Bonzai · ${label}`],
@@ -794,45 +800,38 @@ export default {
   description: "Manage Bonzai credentials and automatic rotation.",
   defaultEnabled: true,
   register(ctx) {
-    let provider = "";
-    let disposeStatus = null;
-    const syncStatus = () => {
-      const shouldShow = provider === "bonzai";
-      if (shouldShow && !disposeStatus) {
-        disposeStatus = ctx.register({
-          id: "status",
-          area: STATUSBAR_AREAS.right,
-          order: 82,
-          data: {
-            id: "bonzai-key-manager.status",
-            label: jsx(BonzaiStatusLabel, {}),
-            title: "Manage Bonzai credentials and automatic rotation",
-            variant: "menu",
-            menuAlign: "end",
-            menuClassName: "w-[360px] p-0",
-            menuContent: () => jsx(Manager, { ctx }),
-          },
-        });
-      } else if (!shouldShow && disposeStatus) {
-        disposeStatus();
-        disposeStatus = null;
-      }
-    };
     const disposeProvider = host.onEvent("session.info", (event) => {
       const activeSessionId = host.state.activeSessionId.get();
       const eventSessionId = String(event?.session_id ?? "");
       if (eventSessionId && activeSessionId && eventSessionId !== activeSessionId) return;
       const payload = event?.payload ?? {};
-      provider = String(payload.provider ?? "").trim().toLowerCase();
+      const provider = String(payload.provider ?? "").trim().toLowerCase();
+      const model = String(payload.model ?? "").trim();
+      const alias = String(payload.model_alias ?? "").trim();
       sessionStatus.set({
         provider,
+        model,
+        alias,
         running: Boolean(payload.running),
         credential_binding: payload.credential_binding ?? null,
       });
-      syncStatus();
     });
 
     ctx.registerMany([
+      {
+        id: "status",
+        area: STATUSBAR_AREAS.right,
+        order: 82,
+        data: {
+          id: "bonzai-key-manager.status",
+          label: jsx(BonzaiStatusLabel, {}),
+          title: "Manage Bonzai credentials and client aliases",
+          variant: "menu",
+          menuAlign: "end",
+          menuClassName: "w-[360px] p-0",
+          menuContent: () => jsx(Manager, { ctx }),
+        },
+      },
       {
         id: "manager",
         area: PANES_AREA,
@@ -853,7 +852,6 @@ export default {
     ]);
     return () => {
       disposeProvider();
-      disposeStatus?.();
     };
   },
 };

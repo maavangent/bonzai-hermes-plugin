@@ -22,7 +22,7 @@ def test_status_chip_tracks_session_provider_events():
     source = PLUGIN.read_text()
 
     assert 'host.onEvent("session.info"' in source
-    assert 'provider === "bonzai"' in source
+    assert 'sessionStatus.set({' in source
 
 
 def test_desktop_plugin_uses_slash_exec_contract():
