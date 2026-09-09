@@ -1,6 +1,6 @@
 # Bonzai Hermes Plugin
 
-Hermes model provider plugin for the internal Bonzai API at iO, with built-in multi-key alias support and a Desktop companion for Hermes Desktop.
+Hermes model provider plugin for the internal Bonzai API at iO, with built-in multi-key alias support and a native Desktop companion for Hermes Desktop.
 
 Works on **macOS, Linux and Windows**.
 
@@ -14,8 +14,8 @@ Works on **macOS, Linux and Windows**.
 2. Run the launcher for your operating system:
    - **macOS:** Double-click `Install-Bonzai.command`
    - **Windows:** Double-click `Install-Bonzai.cmd`
-3. Paste your Bonzai API key when prompted (get one at [bonzai.iodigital.com](https://bonzai.iodigital.com/)).
-4. Open or restart **Hermes Desktop** — Bonzai is immediately ready with `claude-sonnet-5` as your active model!
+3. Paste your Bonzai API key when prompted (grab one at [bonzai.iodigital.com](https://bonzai.iodigital.com/)).
+4. Open or restart **Hermes Desktop** — Bonzai is immediately ready with `gemini-3.7-flash` as your active default model!
 
 ---
 
@@ -41,13 +41,16 @@ cd ~; Remove-Item -Recurse -Force $env:TEMP\bonzai-plugin
 
 ---
 
-## Upgrading from a Previous Version
+## Managing Keys in Hermes Desktop UI (Bonzai Key Manager)
 
-If you or your colleagues already have an older version of the Bonzai plugin installed:
+The plugin automatically installs the **Bonzai Key Manager** desktop extension. Once installed, you can manage your keys and client credentials directly inside the Hermes Desktop app:
 
-- **Simply run `Install-Bonzai.command` (or `python install.py`) again.**
-- The installer is fully idempotent: it detects previous installations, replaces the plugin files with the latest version, refreshes the provider overlay, and **preserves your existing API keys and configurations**.
-- Restart Hermes Desktop after updating.
+1. **Status Bar Chip (Bottom-Right):**  
+   Click the **🌿 Bonzai** chip in the bottom-right corner of Hermes Desktop to open a quick popover with your active credentials and rotation settings.
+2. **Dedicated Sidebar Pane:**  
+   Open the **Bonzai Keys** panel on the right sidebar to add, test, rename, or remove API keys with a visual form.
+3. **Command Palette (`⌘K` / `Ctrl+K`):**  
+   Type `Bonzai: Locate key manager` to instantly focus the key manager pane.
 
 ---
 
@@ -65,14 +68,14 @@ Run `python install.py --add-alias` (or select Option 2 in `Install-Bonzai.comma
 ====================================================
 Client name (e.g. landal, heineken): landal
 Paste the Bonzai API Key for 'landal': sk-bonzai-landal-...
-Preferred model [claude-sonnet-5]: claude-sonnet-5
+Preferred model [gemini-3.7-flash]: gemini-3.7-flash
 
 ✅ Client alias 'landal' added!
 ```
 
 ### Method 2: Directly in Hermes Chat
 
-You can also configure client keys directly in your chat:
+You can configure client keys directly in your chat:
 
 1. Store the client's API key:
    ```text
@@ -82,7 +85,7 @@ You can also configure client keys directly in your chat:
    ```yaml
    model_aliases:
      landal:
-       model: claude-sonnet-5
+       model: gemini-3.7-flash
        provider: custom
        base_url: "https://api-v2.bonzai.iodigital.com"
        key_env: BONZAI_LANDAL_API_KEY
@@ -95,6 +98,17 @@ You can also configure client keys directly in your chat:
 
 ---
 
+## Upgrading from a Previous Version
+
+If you or your colleagues already have an older version of the Bonzai plugin installed:
+
+- **Simply run `Install-Bonzai.command` (or `python install.py`) again.**
+- The installer is fully idempotent: it detects previous installations, replaces the plugin files with the latest version, refreshes the provider overlay, and **preserves your existing API keys and configurations**.
+- If an existing key is detected, the installer gives you the option to keep it, assign it to a client alias, or replace it.
+- Restart Hermes Desktop after updating.
+
+---
+
 ## What the Installer Does
 
 `install.py` handles the plumbing automatically:
@@ -103,7 +117,7 @@ You can also configure client keys directly in your chat:
 2. Copies and enables the backend at `~/.hermes/plugins/bonzai-key-manager/`.
 3. Copies the Desktop companion to `~/.hermes/desktop-plugins/bonzai-key-manager/plugin.js`.
 4. Injects the `HermesOverlay` entry into `hermes_cli/providers.py` so `/model` and the model picker recognise Bonzai.
-5. Sets `model.provider: bonzai` and `model.default: claude-sonnet-5` in `config.yaml`.
+5. Sets `model.provider: bonzai` and `model.default: gemini-3.7-flash` in `config.yaml`.
 6. Sets up the default `io` model alias in `config.yaml`.
 7. Clears the model cache so newly added models appear immediately.
 
@@ -139,7 +153,7 @@ Restart Hermes afterwards.
 
 `fetch_models` builds a clean two-tier picker list from the live Bonzai catalog:
 
-- **Tier 1 (Top of list)** — The **two newest versions of every flagship family** (Opus, Sonnet, GPT-5, Gemini Pro/Flash, GLM, Codestral).
+- **Tier 1 (Top of list)** — The **two newest versions of every flagship family** (Gemini Flash/Pro, Claude Sonnet/Opus, GPT-5, GLM, Codestral).
 - **Tier 2** — All other callable models, older versions, and lightweight tiers (`-mini`, `-nano`, `-flash`, `-lite`).
 
 **Filtered out automatically:**

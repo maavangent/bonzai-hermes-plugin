@@ -341,7 +341,7 @@ def test_configure_bonzai_defaults(tmp_path):
 
     config = installer._load_config()
     assert config["model"]["provider"] == "bonzai"
-    assert config["model"]["default"] == "claude-sonnet-5"
+    assert config["model"]["default"] == "gemini-3.7-flash"
     assert "io" in config["model_aliases"]
     assert config["model_aliases"]["io"]["provider"] == "bonzai"
 
@@ -351,13 +351,13 @@ def test_add_client_alias(tmp_path):
     installer.CONFIG_FILE = tmp_path / "config.yaml"
     installer.ENV_FILE = tmp_path / ".env"
 
-    installer.add_client_alias("landal", "sk-landal-key", "claude-sonnet-5")
+    installer.add_client_alias("landal", "sk-landal-key", "gemini-3.7-flash")
     assert installer.get_env_var("BONZAI_LANDAL_API_KEY") == "sk-landal-key"
 
     config = installer._load_config()
     assert "landal" in config["model_aliases"]
     alias = config["model_aliases"]["landal"]
-    assert alias["model"] == "claude-sonnet-5"
+    assert alias["model"] == "gemini-3.7-flash"
     assert alias["provider"] == "custom"
     assert alias["base_url"] == "https://api-v2.bonzai.iodigital.com"
     assert alias["key_env"] == "BONZAI_LANDAL_API_KEY"

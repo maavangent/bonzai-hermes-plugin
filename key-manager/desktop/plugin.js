@@ -734,7 +734,7 @@ export default {
   id: PLUGIN_ID,
   name: "Bonzai Key Manager",
   description: "Manage Bonzai credentials and automatic rotation.",
-  defaultEnabled: false,
+  defaultEnabled: true,
   register(ctx) {
     let provider = "";
     let disposeStatus = null;

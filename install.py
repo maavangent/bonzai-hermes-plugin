@@ -340,22 +340,22 @@ def configure_bonzai_defaults(api_key: str | None = None) -> None:
     if isinstance(model_cfg, dict):
         model_cfg["provider"] = "bonzai"
         if not model_cfg.get("default"):
-            model_cfg["default"] = "claude-sonnet-5"
+            model_cfg["default"] = "gemini-3.7-flash"
 
     # Configure default aliases
     aliases = config.setdefault("model_aliases", {})
     if isinstance(aliases, dict):
         if "io" not in aliases:
             aliases["io"] = {
-                "model": "claude-sonnet-5",
+                "model": "gemini-3.7-flash",
                 "provider": "bonzai",
             }
 
     _save_config(config)
-    log(f"{OK}Bonzai configured as default provider with 'claude-sonnet-5' in {CONFIG_FILE}")
+    log(f"{OK}Bonzai configured as default provider with 'gemini-3.7-flash' in {CONFIG_FILE}")
 
 
-def add_client_alias(name: str, api_key: str, model: str = "claude-sonnet-5") -> None:
+def add_client_alias(name: str, api_key: str, model: str = "gemini-3.7-flash") -> None:
     """Add a client-specific API key and alias."""
     clean_name = re.sub(r"[^a-zA-Z0-9_-]", "", name.strip().lower())
     if not clean_name:
@@ -402,7 +402,7 @@ def prompt_api_key_if_needed() -> str | None:
             elif choice == "2":
                 client_name = input("Client / project name (e.g. landal, heineken): ").strip()
                 if client_name:
-                    model = input("Preferred model for this client [claude-sonnet-5]: ").strip() or "claude-sonnet-5"
+                    model = input("Preferred model for this client [gemini-3.7-flash]: ").strip() or "gemini-3.7-flash"
                     add_client_alias(client_name, existing_key, model)
                     log(f"{OK}Assigned existing key to alias '{client_name.lower()}'.")
                 
@@ -450,7 +450,7 @@ def interactive_add_alias() -> None:
         if not key:
             log(f"{WARN}No key provided. Operation cancelled.")
             return
-        model = input("Preferred model [claude-sonnet-5]: ").strip() or "claude-sonnet-5"
+        model = input("Preferred model [gemini-3.7-flash]: ").strip() or "gemini-3.7-flash"
         add_client_alias(name, key, model)
         log("")
         log(f"{OK}Success! In Hermes chat, switch anytime with: /model {name.lower()}")
@@ -539,7 +539,7 @@ def do_install(interactive: bool = False) -> None:
     log(f"{OK}Installation complete!")
     log("====================================================")
     log("Restart Hermes Desktop (or run 'hermes gateway restart').")
-    log("Bonzai is now ready with 'claude-sonnet-5' as your default model!")
+    log("Bonzai is now ready with 'gemini-3.7-flash' as your default model!")
 
 
 def do_uninstall() -> None:
