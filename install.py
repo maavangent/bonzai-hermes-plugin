@@ -339,6 +339,7 @@ def configure_bonzai_defaults(api_key: str | None = None) -> None:
     model_cfg = config.setdefault("model", {})
     if isinstance(model_cfg, dict):
         model_cfg["provider"] = "bonzai"
+        model_cfg["base_url"] = "https://api-v2.bonzai.iodigital.com"
         if not model_cfg.get("default"):
             model_cfg["default"] = "gemini-3.7-flash"
 

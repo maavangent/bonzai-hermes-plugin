@@ -1,5 +1,5 @@
 name: bonzai-key-manager
-kind: dashboard
+kind: standalone
 version: 1.0.0
 description: Securely manage Bonzai credential rotation
 manifest_version: 2
