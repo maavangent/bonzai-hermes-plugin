@@ -100,6 +100,10 @@ def _is_manual(source: str) -> bool:
 def _public_credential(entry) -> dict:
     manual = _is_manual(entry.source)
     cooldown_until = _exhausted_until(entry) if entry.last_status == STATUS_EXHAUSTED else None
+    api_key = str(getattr(entry, "runtime_api_key", "") or "").strip()
+    masked = None
+    if api_key:
+        masked = api_key[:6] + "..." + api_key[-4:] if len(api_key) > 10 else "***"
     # Explicit allow-list: no token-bearing credential object is ever serialized.
     return {
         "id": entry.id,
@@ -107,6 +111,7 @@ def _public_credential(entry) -> dict:
         "source": entry.source,
         "auth_type": entry.auth_type,
         "status": entry.last_status or "ok",
+        "masked": masked,
         "cooldown_until": cooldown_until,
         "removable": manual,
         "renameable": manual,
@@ -195,8 +200,14 @@ def _sync_alias_for_label(label: str, api_key: str) -> None:
         cfg = load_config()
         aliases = cfg.setdefault("model_aliases", {})
         if isinstance(aliases, dict):
+            existing_alias = aliases.get(slug)
+            existing_model = (
+                existing_alias.get("model")
+                if isinstance(existing_alias, dict)
+                else None
+            )
             aliases[slug] = {
-                "model": "gemini-3.7-flash",
+                "model": existing_model or "gemini-3.7-flash",
                 "provider": "custom",
                 "base_url": INFERENCE_BASE_URL.rstrip("/"),
                 "key_env": env_var,
@@ -270,6 +281,9 @@ def rename_credential(credential_id: str, request: RenameCredentialRequest) -> d
     updated = replace(entry, label=request.label)
     pool._replace_entry(entry, updated)
     pool._persist()
+    api_key = str(getattr(entry, "runtime_api_key", "") or "").strip()
+    if api_key:
+        _sync_alias_for_label(request.label, api_key)
     return {"credential": _public_credential(updated)}
 
 
@@ -277,9 +291,22 @@ def rename_credential(credential_id: str, request: RenameCredentialRequest) -> d
 def remove_credential(credential_id: str) -> Response:
     _ensure_provider_config()
     pool = load_pool(PROVIDER)
-    _manual_entry(pool, credential_id)
+    entry = _manual_entry(pool, credential_id)
+    label = str(getattr(entry, "label", "") or "")
     index = next(i for i, item in enumerate(pool.entries(), start=1) if item.id == credential_id)
     pool.remove_index(index)
+
+    slug = re.sub(r"[\s_]+", "-", label.strip().lower())
+    slug = re.sub(r"[^a-z0-9-]", "", slug).strip("-")
+    if slug and slug not in ("bonzai-api-key", "default", "io"):
+        try:
+            cfg = load_config()
+            aliases = cfg.get("model_aliases", {})
+            if isinstance(aliases, dict) and slug in aliases:
+                del aliases[slug]
+                save_config(cfg)
+        except Exception:
+            pass
     return Response(status_code=204)
 
 

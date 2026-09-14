@@ -9,11 +9,6 @@ import {
   PALETTE_AREA,
   PANES_AREA,
   ScrollArea,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
   Separator,
   STATUSBAR_AREAS,
   StatusDot,
@@ -23,19 +18,12 @@ import {
   useQueryClient,
   useValue,
 } from "@hermes/plugin-sdk";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
 
 const PLUGIN_ID = "bonzai-key-manager";
 const QUERY_KEY = [PLUGIN_ID, "credentials"];
-const STRATEGY_KEY = [PLUGIN_ID, "strategy"];
-const sessionStatus = atom({ provider: "", running: false, credential_binding: null });
-const STRATEGIES = [
-  ["fill_first", "Fill first"],
-  ["round_robin", "Round robin"],
-  ["least_used", "Least used"],
-  ["random", "Random"],
-];
+const sessionStatus = atom({ provider: "", model: "", alias: "", running: false });
 
 const styles = {
   pane: {
@@ -43,38 +31,93 @@ const styles = {
     flexDirection: "column",
     height: "100%",
     minWidth: 0,
+    userSelect: "none",
   },
-  body: { display: "flex", flexDirection: "column", gap: 14, padding: 12 },
-  section: { display: "flex", flexDirection: "column", gap: 8 },
-  row: { display: "flex", alignItems: "center", gap: 8, minWidth: 0 },
-  spread: {
+  body: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+    padding: 12,
+  },
+  headerBox: {
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: "1px solid var(--ui-stroke-secondary, rgba(125,125,125,0.15))",
+    backgroundColor: "var(--ui-surface-subtle, rgba(125,125,125,0.04))",
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+  },
+  headerTitle: {
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+    color: "var(--ui-text-tertiary, var(--muted-foreground))",
+  },
+  headerStatus: {
+    fontSize: 12,
+    fontWeight: 600,
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    color: "var(--foreground)",
+  },
+  list: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+  },
+  row: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 8,
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: "1px solid transparent",
+    cursor: "pointer",
+    transition: "background-color 0.12s ease, border-color 0.12s ease",
   },
-  muted: { color: "var(--ui-text-secondary)", fontSize: 12, lineHeight: 1.45 },
-  tiny: { color: "var(--ui-text-quaternary)", fontSize: 11, lineHeight: 1.35 },
-  card: {
-    border: "1px solid var(--ui-stroke-secondary)",
-    borderRadius: 6,
+  rowActive: {
+    backgroundColor: "var(--ui-surface-selected, rgba(0, 100, 255, 0.08))",
+    borderColor: "var(--ui-stroke-active, rgba(0, 100, 255, 0.25))",
+  },
+  rowHover: {
+    backgroundColor: "var(--ui-surface-hover, rgba(125, 125, 125, 0.07))",
+  },
+  keyInfo: {
     display: "flex",
     flexDirection: "column",
-    gap: 8,
-    padding: 10,
+    gap: 2,
+    minWidth: 0,
+    flex: 1,
   },
-  grow: { flex: 1, minWidth: 0 },
-  label: {
+  keyName: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: "var(--foreground)",
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
-    fontSize: 12,
-    fontWeight: 600,
   },
-  error: {
-    color: "var(--ui-text-danger, var(--destructive))",
-    fontSize: 12,
-    lineHeight: 1.4,
+  keySub: {
+    fontSize: 11,
+    color: "var(--ui-text-tertiary, var(--muted-foreground))",
+    fontFamily: "var(--font-mono, monospace)",
+  },
+  addBox: {
+    padding: 10,
+    borderRadius: 8,
+    border: "1px solid var(--ui-stroke-secondary, rgba(125,125,125,0.18))",
+    backgroundColor: "var(--card)",
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+  },
+  actions: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
   },
 };
 
@@ -84,10 +127,9 @@ function messageOf(error) {
   if (error && typeof error === "object") {
     const candidate = error.detail ?? error.error ?? error.message;
     if (typeof candidate === "string") return candidate;
-    if (candidate && typeof candidate.message === "string")
-      return candidate.message;
+    if (candidate && typeof candidate.message === "string") return candidate.message;
   }
-  return "The Bonzai key manager request failed.";
+  return "The request failed.";
 }
 
 function unwrap(value) {
@@ -110,50 +152,34 @@ function credentialId(entry, index) {
 }
 
 function credentialLabel(entry, index) {
-  return String(
-    entry.label ??
-      entry.name ??
-      entry.display_name ??
-      `Bonzai key ${index + 1}`,
-  );
-}
-
-function credentialSource(entry) {
-  return String(entry.source ?? entry.origin ?? entry.kind ?? "manual");
+  const raw = String(entry.label ?? entry.name ?? entry.display_name ?? `Key ${index + 1}`);
+  if (raw === "BONZAI_API_KEY") return "iO (Default)";
+  return raw;
 }
 
 function isManual(entry) {
-  const source = credentialSource(entry).toLowerCase();
-  if (entry.manual === true || entry.editable === true) return true;
-  if (entry.removable === false || entry.renameable === false) return false;
+  const source = String(entry.source ?? "").toLowerCase();
+  if (entry.manual === true) return true;
+  if (entry.removable === false) return false;
   return !source.includes("env") && !source.includes("environment");
 }
 
-function stateOf(entry) {
-  if (entry.disabled || entry.exhausted) return ["Unavailable", "bad"];
-  if (
-    entry.cooldown ||
-    entry.cooldown_until ||
-    entry.cooldown_remaining ||
-    entry.status === "cooldown"
-  )
-    return ["Cooldown", "warn"];
-  const normalized = String(entry.status ?? "").toLowerCase();
-  if (normalized && !["available", "ok", "ready", "healthy"].includes(normalized)) {
-    return [String(entry.status), "muted"];
-  }
-  return ["Ready", "good"];
-}
+function isEntryActive(entry, index, session) {
+  const rawLabel = String(entry.label ?? entry.name ?? "");
+  const slug = (rawLabel === "BONZAI_API_KEY" || rawLabel.toLowerCase() === "io" || rawLabel.toLowerCase() === "default")
+    ? "io"
+    : rawLabel.toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9-]/g, "");
 
-function maskedHint(entry) {
-  return (
-    entry.masked ??
-    entry.mask ??
-    entry.preview ??
-    entry.key_hint ??
-    entry.api_key_hint ??
-    null
-  );
+  const currentAlias = (session.alias || "").toLowerCase();
+  const currentProvider = (session.provider || "").toLowerCase();
+
+  if (currentAlias) {
+    return currentAlias === slug;
+  }
+  if (currentProvider === "bonzai" || currentProvider === "custom") {
+    return slug === "io";
+  }
+  return false;
 }
 
 async function request(ctx, path, options) {
@@ -164,239 +190,118 @@ async function request(ctx, path, options) {
   }
 }
 
-function useAction() {
-  const [pending, setPending] = useState(null);
-  const [error, setError] = useState(null);
-  const run = async (name, action) => {
-    setPending(name);
-    setError(null);
-    try {
-      return await action();
-    } catch (err) {
-      setError(messageOf(err));
-      throw err;
-    } finally {
-      setPending(null);
-    }
-  };
-  return { pending, error, clearError: () => setError(null), run };
-}
-
-function BonzaiStatusLabel() {
+export function BonzaiStatusLabel() {
   const session = useValue(sessionStatus);
-  let label = "iO";
-  if (session.alias) {
-    label = session.alias;
-  } else if (session.provider && session.provider !== "bonzai" && session.provider !== "custom") {
-    label = session.provider;
-  } else if (session.model) {
-    label = session.model;
+  const isBonzai = session.provider === "bonzai" || session.provider === "custom" || Boolean(session.alias);
+
+  if (!isBonzai && session.provider) {
+    return jsxs("span", {
+      style: { display: "inline-flex", alignItems: "center", gap: 5, opacity: 0.75 },
+      children: [
+        jsx(StatusDot, { tone: "muted" }),
+        "Bonzai · Inactive",
+      ],
+    });
   }
+
+  let activeLabel = "iO (Default)";
+  if (session.alias) {
+    activeLabel = session.alias === "io" ? "iO (Default)" : session.alias;
+  } else if (session.model) {
+    activeLabel = session.model;
+  }
+
   return jsxs("span", {
     style: { display: "inline-flex", alignItems: "center", gap: 5 },
-    children: [jsx(StatusDot, { tone: "good" }), `Bonzai · ${label}`],
+    children: [
+      jsx(StatusDot, { tone: "good" }),
+      `Bonzai · ${activeLabel}`,
+    ],
   });
 }
 
-function CredentialCard({ ctx, entry, index, busy, onChanged }) {
+function KeyRow({ ctx, entry, index, session, busy, onSelect, onRemoved }) {
   const id = credentialId(entry, index);
   const label = credentialLabel(entry, index);
+  const active = isEntryActive(entry, index, session);
   const manual = isManual(entry);
-  const canRename = manual && entry.renameable !== false;
-  const canRemove = manual && entry.removable !== false;
-  const [status, tone] = stateOf(entry);
-  const [renaming, setRenaming] = useState(false);
-  const [nextLabel, setNextLabel] = useState(label);
+  const [hover, setHover] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
 
-  useEffect(() => setNextLabel(label), [label]);
+  const masked = entry.masked || (manual ? "Manual client key" : "Default environment key");
 
-  const test = () =>
-    onChanged(
-      `test:${id}`,
-      () => request(ctx, "/credentials/test-stored", { method: "POST", body: { id } }),
-      "Credential test completed.",
-    );
-  const rename = async (event) => {
-    event.preventDefault();
-    const value = nextLabel.trim();
-    if (!value || value === label) {
-      setRenaming(false);
-      return;
-    }
-    await onChanged(
-      `rename:${id}`,
-      () =>
-        request(ctx, `/credentials/${encodeURIComponent(id)}`, {
-          method: "PATCH",
-          body: { label: value },
-        }),
-      "Credential renamed.",
-    );
-    setRenaming(false);
-  };
-  const remove = () =>
-    onChanged(
-      `remove:${id}`,
-      () =>
-        request(ctx, `/credentials/${encodeURIComponent(id)}`, {
-          method: "DELETE",
-        }),
-      "Credential removed.",
-    );
-
-  const activate = async () => {
-    const sid = host.state.activeSessionId.get();
-    if (!sid) {
-      host.notify({
-        kind: "warning",
-        message: "No active chat session selected.",
-      });
-      return;
-    }
+  const remove = async (e) => {
+    e.stopPropagation();
     try {
-      let slug =
-        label === "BONZAI_API_KEY"
-          ? "io"
-          : label
-              .toLowerCase()
-              .replace(/[\s_]+/g, "-")
-              .replace(/[^a-z0-9-]/g, "");
-
-      try {
-        const res = await request(ctx, `/credentials/${encodeURIComponent(id)}/activate`, {
-          method: "POST",
-        });
-        const data = unwrap(res);
-        if (data?.slug) slug = data.slug;
-      } catch {
-        // Fallback to computed slug
-      }
-
-      const res = await host.request("slash.exec", {
-        command: `/model ${slug}`,
-        session_id: sid,
-      });
-      const output = unwrap(res)?.output || "";
-      host.notify({
-        kind: "success",
-        message: output || `Switched session to /model ${slug}`,
-      });
+      await request(ctx, `/credentials/${encodeURIComponent(id)}`, { method: "DELETE" });
+      onRemoved();
+      host.notify({ kind: "success", message: `Removed “${label}”` });
     } catch (err) {
-      host.notify({
-        kind: "error",
-        message: `Could not switch model: ${messageOf(err)}`,
-      });
+      host.notify({ kind: "error", message: `Could not remove key: ${messageOf(err)}` });
     }
+  };
+
+  const rowStyle = {
+    ...styles.row,
+    ...(active ? styles.rowActive : (hover ? styles.rowHover : {})),
   };
 
   return jsxs("div", {
-    style: styles.card,
+    style: rowStyle,
+    onClick: () => !active && onSelect(entry, index),
+    onMouseEnter: () => setHover(true),
+    onMouseLeave: () => setHover(false),
     children: [
       jsxs("div", {
-        style: styles.spread,
+        style: { display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 },
         children: [
+          jsx(StatusDot, { tone: active ? "good" : "muted" }),
           jsxs("div", {
-            style: { ...styles.row, ...styles.grow },
+            style: styles.keyInfo,
             children: [
-              jsx(StatusDot, { tone }),
-              jsx("span", {
-                style: styles.label,
-                title: label,
-                children: label,
-              }),
+              jsx("span", { style: styles.keyName, children: label }),
+              jsx("span", { style: styles.keySub, children: masked }),
             ],
           }),
-          jsx(Badge, { variant: "outline", children: status }),
         ],
       }),
       jsxs("div", {
-        style: styles.spread,
+        style: styles.actions,
         children: [
-          jsx("span", {
-            style: styles.tiny,
-            children:
-              maskedHint(entry) ??
-              (manual ? "Manual credential" : "Environment credential"),
-          }),
-          jsx("span", {
-            style: styles.tiny,
-            children: manual ? "Manual" : "Read only",
-          }),
+          active
+            ? jsx(Badge, { variant: "default", children: "Active in chat" })
+            : jsx(Button, {
+                size: "xs",
+                variant: "ghost",
+                disabled: busy,
+                onClick: (e) => {
+                  e.stopPropagation();
+                  onSelect(entry, index);
+                },
+                children: "Use",
+              }),
+          manual && !active
+            ? jsx(Button, {
+                size: "xs",
+                variant: "ghost",
+                disabled: busy,
+                onClick: (e) => {
+                  e.stopPropagation();
+                  setConfirmRemove(true);
+                },
+                children: "✕",
+              })
+            : null,
         ],
       }),
-      renaming
-        ? jsxs("form", {
-            onSubmit: rename,
-            style: styles.row,
-            children: [
-              jsx(Input, {
-                autoFocus: true,
-                "aria-label": "New credential label",
-                onChange: (event) => setNextLabel(event.target.value),
-                style: styles.grow,
-                value: nextLabel,
-              }),
-              jsx(Button, {
-                disabled: busy,
-                size: "xs",
-                type: "submit",
-                children: "Save",
-              }),
-              jsx(Button, {
-                onClick: () => setRenaming(false),
-                size: "xs",
-                type: "button",
-                variant: "ghost",
-                children: "Cancel",
-              }),
-            ],
-          })
-        : jsxs("div", {
-            style: styles.row,
-            children: [
-              jsx(Button, {
-                disabled: busy,
-                onClick: activate,
-                size: "xs",
-                variant: "outline",
-                children: "Use in Chat",
-              }),
-              jsx(Button, {
-                disabled: busy,
-                onClick: test,
-                size: "xs",
-                variant: "secondary",
-                children: busy === `test:${id}` ? "Testing…" : "Test",
-              }),
-              canRename
-                ? jsx(Button, {
-                    disabled: busy,
-                    onClick: () => setRenaming(true),
-                    size: "xs",
-                    variant: "ghost",
-                    children: "Rename",
-                  })
-                : null,
-              canRemove
-                ? jsx(Button, {
-                    disabled: busy,
-                    onClick: () => setConfirmRemove(true),
-                    size: "xs",
-                    variant: "ghost",
-                    children: "Remove",
-                  })
-                : null,
-            ],
-          }),
       jsx(ConfirmDialog, {
         confirmLabel: "Remove",
-        description: `Remove “${label}” from the Bonzai credential pool? This cannot be undone.`,
+        description: `Remove “${label}” from Bonzai keys? This will remove the client alias.`,
         destructive: true,
         onClose: () => setConfirmRemove(false),
         onConfirm: remove,
         open: confirmRemove,
-        title: "Remove credential?",
+        title: "Remove client key?",
       }),
     ],
   });
@@ -404,123 +309,111 @@ function CredentialCard({ ctx, entry, index, busy, onChanged }) {
 
 function Manager({ ctx }) {
   const queryClient = useQueryClient();
-  const labelRef = useRef(null);
-  const [label, setLabel] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [confirmReset, setConfirmReset] = useState(false);
-  const action = useAction();
+  const nameInputRef = useRef(null);
   const profile = useValue(host.state.profile);
   const activeSessionId = useValue(host.state.activeSessionId);
-  const sessionInfo = useValue(sessionStatus);
+  const session = useValue(sessionStatus);
+
+  const [adding, setAdding] = useState(false);
+  const [newLabel, setNewLabel] = useState("");
+  const [newKey, setNewKey] = useState("");
+  const [busy, setBusy] = useState(false);
 
   const credentials = useQuery({
     queryKey: [...QUERY_KEY, profile],
     queryFn: () => request(ctx, "/credentials"),
     refetchInterval: 15000,
   });
-  const strategy = useQuery({
-    queryKey: [...STRATEGY_KEY, profile],
-    queryFn: () => request(ctx, "/strategy"),
-  });
+
   const entries = useMemo(
     () => credentialsFrom(credentials.data),
     [credentials.data],
   );
-  const strategyData = unwrap(strategy.data);
-  const strategyValue = String(
-    typeof strategyData === "string"
-      ? strategyData
-      : (strategyData?.strategy ?? strategyData?.value ?? "fill_first"),
-  );
 
   const refresh = async () => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
-      queryClient.invalidateQueries({ queryKey: STRATEGY_KEY }),
-    ]);
+    await queryClient.invalidateQueries({ queryKey: QUERY_KEY });
   };
 
-  const changed = async (name, operation, success) => {
-    const result = await action.run(name, operation);
-    await refresh();
-    if (success) host.notify({ kind: "success", message: success });
-    return result;
-  };
-
-  const add = async (event) => {
-    event.preventDefault();
-    const cleanLabel = label.trim();
-    const cleanKey = apiKey.trim();
-    if (!cleanLabel || !cleanKey) return;
-    await changed(
-      "add",
-      () =>
-        request(ctx, "/credentials", {
-          method: "POST",
-          body: { label: cleanLabel, api_key: cleanKey },
-        }),
-      "Bonzai credential added.",
-    );
-    setLabel("");
-    setApiKey("");
-    labelRef.current?.focus();
-  };
-
-  const changeStrategy = (value) =>
-    changed(
-      "strategy",
-      () =>
-        request(ctx, "/strategy", { method: "PUT", body: { strategy: value } }),
-      "Rotation strategy updated.",
-    );
-  const reset = () =>
-    changed(
-      "reset",
-      () => request(ctx, "/credentials/reset", { method: "POST" }),
-      "Credential cooldowns reset.",
-    );
-  const selectedCredentialId = String(
-    sessionInfo.credential_binding?.credential_id ?? "automatic",
-  );
-  const changeSessionCredential = async (value) => {
-    if (!activeSessionId) return;
-    if (sessionInfo.running) {
-      host.notify({
-        kind: "warning",
-        message: "Wait until the current turn finishes to switch API keys.",
-      });
+  const switchKey = async (entry, index) => {
+    if (!activeSessionId) {
+      host.notify({ kind: "warning", message: "No active chat session selected." });
       return;
     }
-    const entry = credentials.find(
-      (c, idx) => credentialId(c, idx) === value,
-    );
-    const label = entry ? credentialLabel(entry, 0) : "";
-    const slug =
-      value === "automatic" || label === "BONZAI_API_KEY"
-        ? "io"
-        : label
-            .toLowerCase()
-            .replace(/[\s_]+/g, "-")
-            .replace(/[^a-z0-9-]/g, "");
+    setBusy(true);
+    const id = credentialId(entry, index);
+    const rawLabel = String(entry.label ?? entry.name ?? "");
+    let slug = (rawLabel === "BONZAI_API_KEY" || rawLabel.toLowerCase() === "io" || rawLabel.toLowerCase() === "default")
+      ? "io"
+      : rawLabel.toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9-]/g, "");
 
-    await action.run(`session:${value}`, () =>
-      host.request("slash.exec", {
+    try {
+      const res = await request(ctx, `/credentials/${encodeURIComponent(id)}/activate`, {
+        method: "POST",
+      });
+      const data = unwrap(res);
+      if (data?.slug) slug = data.slug;
+    } catch {
+      // Fallback to computed slug
+    }
+
+    try {
+      await host.request("slash.exec", {
         command: `/model ${slug}`,
         session_id: activeSessionId,
-      }),
-    );
-    sessionStatus.set({
-      ...sessionStatus.get(),
-      credential_binding:
-        value === "automatic"
-          ? null
-          : { provider: "bonzai", credential_id: value, mode: "strict" },
-    });
-    host.notify({
-      kind: "success",
-      message: `Switched session to /model ${slug}`,
-    });
+      });
+
+      // Optimistic update
+      sessionStatus.set({
+        ...sessionStatus.get(),
+        provider: "bonzai",
+        alias: slug === "io" ? "io" : slug,
+      });
+
+      const display = credentialLabel(entry, index);
+      host.notify({ kind: "success", message: `Switched this chat to ${display}` });
+    } catch (err) {
+      host.notify({ kind: "error", message: `Could not switch key: ${messageOf(err)}` });
+    } finally {
+      setBusy(false);
+    }
   };
+
+  const addAndUse = async (e) => {
+    e.preventDefault();
+    const cleanLabel = newLabel.trim();
+    const cleanKey = newKey.trim();
+    if (!cleanLabel || !cleanKey) return;
+
+    setBusy(true);
+    try {
+      const res = await request(ctx, "/credentials", {
+        method: "POST",
+        body: { label: cleanLabel, api_key: cleanKey },
+      });
+      const data = unwrap(res);
+      const created = data?.credential;
+
+      await refresh();
+      setNewLabel("");
+      setNewKey("");
+      setAdding(false);
+
+      if (created) {
+        await switchKey(created, 0);
+      } else {
+        host.notify({ kind: "success", message: `Added client key “${cleanLabel}”` });
+      }
+    } catch (err) {
+      host.notify({ kind: "error", message: `Could not add key: ${messageOf(err)}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const isBonzai = session.provider === "bonzai" || session.provider === "custom" || Boolean(session.alias);
+  const activeLabel = session.alias
+    ? (session.alias === "io" ? "iO (Default)" : session.alias)
+    : (isBonzai ? "iO (Default)" : null);
 
   return jsx("div", {
     "data-bonzai-key-manager": "true",
@@ -530,274 +423,131 @@ function Manager({ ctx }) {
       children: jsxs("div", {
         style: styles.body,
         children: [
-          jsxs("section", {
-            style: styles.section,
+          // Active chat status banner
+          jsxs("div", {
+            style: styles.headerBox,
             children: [
-              jsx("strong", {
-                style: { fontSize: 13 },
-                children: "This session",
-              }),
-              jsx("p", {
-                style: styles.muted,
-                children:
-                  "Choose one Bonzai key for this session, or let Hermes rotate automatically. A pinned key fails closed and never falls back to another account.",
-              }),
-              jsxs(Select, {
-                disabled:
-                  !activeSessionId ||
-                  sessionInfo.provider !== "bonzai" ||
-                  sessionInfo.running ||
-                  Boolean(action.pending),
-                onValueChange: changeSessionCredential,
-                value: selectedCredentialId,
-                children: [
-                  jsx(SelectTrigger, {
-                    "aria-label": "Credential for this session",
-                    children: jsx(SelectValue, {}),
-                  }),
-                  jsxs(SelectContent, {
-                    children: [
-                      jsx(SelectItem, {
-                        value: "automatic",
-                        children: "Automatic rotation",
-                      }),
-                      ...entries.map((entry, index) =>
-                        jsx(
-                          SelectItem,
-                          {
-                            value: credentialId(entry, index),
-                            children: credentialLabel(entry, index),
-                          },
-                          credentialId(entry, index),
-                        ),
-                      ),
-                    ],
-                  }),
-                ],
-              }),
-              sessionInfo.running
-                ? jsx("p", {
-                    style: styles.tiny,
-                    children: "Wait until the current turn finishes to switch API keys.",
-                  })
-                : null,
-            ],
-          }),
-          jsx(Separator, {}),
-          jsxs("section", {
-            style: styles.section,
-            children: [
-              jsxs("div", {
-                style: styles.spread,
-                children: [
-                  jsx("strong", {
-                    style: { fontSize: 13 },
-                    children: "Automatic rotation",
-                  }),
-                  jsx(Button, {
-                    disabled: credentials.isFetching,
-                    onClick: () => refresh(),
-                    size: "xs",
-                    variant: "ghost",
-                    children: credentials.isFetching
-                      ? "Refreshing…"
-                      : "Refresh",
-                  }),
-                ],
-              }),
-              jsx("p", {
-                style: styles.muted,
-                children:
-                  "Automatic rotation applies whenever this session is not pinned to a specific key.",
-              }),
-              jsxs("div", {
-                style: styles.row,
-                children: [
-                  jsxs(Select, {
-                    disabled: action.pending === "strategy",
-                    onValueChange: changeStrategy,
-                    value: STRATEGIES.some(([value]) => value === strategyValue)
-                      ? strategyValue
-                      : "fill_first",
-                    children: [
-                      jsx(SelectTrigger, {
-                        "aria-label": "Credential rotation strategy",
-                        style: styles.grow,
-                        children: jsx(SelectValue, {}),
-                      }),
-                      jsx(SelectContent, {
-                        children: STRATEGIES.map(([value, text]) =>
-                          jsx(SelectItem, { value, children: text }, value),
-                        ),
-                      }),
-                    ],
-                  }),
-                  jsx(Button, {
-                    disabled: Boolean(action.pending),
-                    onClick: () => setConfirmReset(true),
-                    size: "xs",
-                    variant: "secondary",
-                    children:
-                      action.pending === "reset"
-                        ? "Resetting…"
-                        : "Reset cooldowns",
-                  }),
-                ],
-              }),
-            ],
-          }),
-          jsx(Separator, {}),
-          jsxs("section", {
-            style: styles.section,
-            children: [
-              jsx("strong", {
-                style: { fontSize: 13 },
-                children: "Add credential",
-              }),
-              jsx("p", {
-                style: styles.tiny,
-                children:
-                  "Keys are sent directly to the local plugin backend and are never saved in browser storage.",
-              }),
-              jsxs("form", {
-                onSubmit: add,
-                style: styles.section,
-                children: [
-                  jsx(Input, {
-                    "aria-label": "Credential label",
-                    onChange: (event) => setLabel(event.target.value),
-                    placeholder: "Label",
-                    ref: labelRef,
-                    value: label,
-                  }),
-                  jsx(Input, {
-                    "aria-label": "Bonzai API key",
-                    autoComplete: "new-password",
-                    onChange: (event) => setApiKey(event.target.value),
-                    placeholder: "Bonzai API key",
-                    type: "password",
-                    value: apiKey,
-                  }),
-                  jsx(Button, {
-                    disabled:
-                      Boolean(action.pending) ||
-                      !label.trim() ||
-                      !apiKey.trim(),
-                    type: "submit",
-                    children: action.pending === "add" ? "Adding…" : "Add key",
-                  }),
-                ],
-              }),
-            ],
-          }),
-          jsx(Separator, {}),
-          jsxs("section", {
-            style: styles.section,
-            children: [
-              jsxs("div", {
-                style: styles.spread,
-                children: [
-                  jsx("strong", {
-                    style: { fontSize: 13 },
-                    children: "Credentials",
-                  }),
-                  jsx(Badge, {
-                    variant: "muted",
-                    children: String(entries.length),
-                  }),
-                ],
-              }),
-              action.error
+              jsx("span", { style: styles.headerTitle, children: "Active In This Chat" }),
+              activeLabel
                 ? jsxs("div", {
-                    role: "alert",
-                    style: styles.spread,
+                    style: styles.headerStatus,
                     children: [
-                      jsx("span", {
-                        style: styles.error,
-                        children: action.error,
-                      }),
-                      jsx(Button, {
-                        onClick: action.clearError,
-                        size: "xs",
-                        variant: "ghost",
-                        children: "Dismiss",
-                      }),
+                      jsx(StatusDot, { tone: "good" }),
+                      activeLabel,
                     ],
                   })
-                : null,
+                : jsxs("div", {
+                    style: { ...styles.headerStatus, color: "var(--ui-text-warning, #d97706)" },
+                    children: [
+                      jsx(StatusDot, { tone: "warn" }),
+                      "Bonzai is not active in this chat",
+                    ],
+                  }),
+            ],
+          }),
+
+          // Keys list
+          jsxs("div", {
+            style: { display: "flex", flexDirection: "column", gap: 6 },
+            children: [
+              jsx("span", { style: styles.headerTitle, children: "Available Keys" }),
               credentials.isLoading
-                ? jsx("div", {
-                    style: {
-                      display: "flex",
-                      justifyContent: "center",
-                      padding: 16,
-                    },
-                    children: jsx(GlyphSpinner, {}),
-                  })
+                ? jsx("div", { style: { padding: 12, display: "flex", justifyContent: "center" }, children: jsx(GlyphSpinner, {}) })
                 : null,
               credentials.isError
                 ? jsx(ErrorState, {
-                    title: "Could not load credentials",
+                    title: "Could not load keys",
                     description: messageOf(credentials.error),
-                    children: jsx(Button, {
-                      onClick: () => credentials.refetch(),
-                      size: "sm",
-                      variant: "secondary",
-                      children: "Try again",
-                    }),
+                    children: jsx(Button, { size: "xs", onClick: refresh, children: "Retry" }),
                   })
                 : null,
-              !credentials.isLoading &&
-              !credentials.isError &&
-              entries.length === 0
-                ? jsx(EmptyState, {
-                    description:
-                      "Add a manual Bonzai API key above, or configure one in the environment.",
-                    title: "No credentials found",
-                  })
+              !credentials.isLoading && !credentials.isError && entries.length === 0
+                ? jsx(EmptyState, { title: "No keys found", description: "Add a Bonzai client key below." })
                 : null,
-              entries.map((entry, index) =>
-                jsx(
-                  CredentialCard,
-                  {
-                    busy: action.pending,
-                    ctx,
-                    entry,
-                    index,
-                    onChanged: changed,
-                  },
-                  credentialId(entry, index),
+              jsxs("div", {
+                style: styles.list,
+                children: entries.map((entry, index) =>
+                  jsx(
+                    KeyRow,
+                    {
+                      ctx,
+                      entry,
+                      index,
+                      session,
+                      busy,
+                      onSelect: switchKey,
+                      onRemoved: refresh,
+                    },
+                    credentialId(entry, index),
+                  ),
                 ),
-              ),
+              }),
             ],
           }),
-          jsx(ConfirmDialog, {
-            confirmLabel: "Reset cooldowns",
-            description:
-              "Clear cooldown and exhaustion state for all Bonzai credentials? Keys that are still rate-limited may fail again.",
-            onClose: () => setConfirmReset(false),
-            onConfirm: reset,
-            open: confirmReset,
-            title: "Reset credential cooldowns?",
-          }),
+
+          jsx(Separator, {}),
+
+          // Add client key form or trigger button
+          adding
+            ? jsxs("form", {
+                onSubmit: addAndUse,
+                style: styles.addBox,
+                children: [
+                  jsx("span", { style: { fontSize: 12, fontWeight: 600 }, children: "Add Client Key" }),
+                  jsx(Input, {
+                    autoFocus: true,
+                    placeholder: "Client name (e.g. Landal, Heineken)",
+                    value: newLabel,
+                    onChange: (e) => setNewLabel(e.target.value),
+                    ref: nameInputRef,
+                  }),
+                  jsx(Input, {
+                    placeholder: "Bonzai API Key",
+                    type: "password",
+                    value: newKey,
+                    onChange: (e) => setNewKey(e.target.value),
+                  }),
+                  jsxs("div", {
+                    style: { display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4 },
+                    children: [
+                      jsx(Button, {
+                        size: "xs",
+                        type: "button",
+                        variant: "ghost",
+                        onClick: () => {
+                          setAdding(false);
+                          setNewLabel("");
+                          setNewKey("");
+                        },
+                        children: "Cancel",
+                      }),
+                      jsx(Button, {
+                        size: "xs",
+                        type: "submit",
+                        disabled: busy || !newLabel.trim() || !newKey.trim(),
+                        children: busy ? "Saving…" : "Save & Use",
+                      }),
+                    ],
+                  }),
+                ],
+              })
+            : jsx(Button, {
+                size: "sm",
+                variant: "outline",
+                onClick: () => setAdding(true),
+                style: { width: "100%", justifyContent: "center" },
+                children: "+ Add Client Key",
+              }),
         ],
       }),
     }),
   });
 }
 
-function locateManager() {
-  host.notify({
-    kind: "info",
-    message:
-      "Open Bonzai Key Manager from the “Bonzai keys” menu in the status bar.",
-  });
-}
-
 export default {
   id: PLUGIN_ID,
   name: "Bonzai Key Manager",
-  description: "Manage Bonzai credentials and automatic rotation.",
+  description: "Select and manage client API keys per chat session.",
   defaultEnabled: true,
   register(ctx) {
     const disposeProvider = host.onEvent("session.info", (event) => {
@@ -813,7 +563,6 @@ export default {
         model,
         alias,
         running: Boolean(payload.running),
-        credential_binding: payload.credential_binding ?? null,
       });
     });
 
@@ -825,10 +574,10 @@ export default {
         data: {
           id: "bonzai-key-manager.status",
           label: jsx(BonzaiStatusLabel, {}),
-          title: "Manage Bonzai credentials and client aliases",
+          title: "Bonzai Keys & Client Selection",
           variant: "menu",
           menuAlign: "end",
-          menuClassName: "w-[360px] p-0",
+          menuClassName: "w-[320px] p-0",
           menuContent: () => jsx(Manager, { ctx }),
         },
       },
@@ -836,7 +585,7 @@ export default {
         id: "manager",
         area: PANES_AREA,
         title: "Bonzai Keys",
-        data: { placement: "right", width: "340px" },
+        data: { placement: "right", width: "320px" },
         render: () => jsx(Manager, { ctx }),
       },
       {
@@ -844,12 +593,18 @@ export default {
         area: PALETTE_AREA,
         data: {
           id: "bonzai-key-manager.focus",
-          label: "Bonzai: Locate key manager",
-          keywords: ["bonzai", "credentials", "keys", "rotation"],
-          run: locateManager,
+          label: "Bonzai: Select client key",
+          keywords: ["bonzai", "client", "keys", "landal", "io"],
+          run: () => {
+            host.notify({
+              kind: "info",
+              message: "Click the Bonzai menu in the bottom-right status bar to switch client keys.",
+            });
+          },
         },
       },
     ]);
+
     return () => {
       disposeProvider();
     };

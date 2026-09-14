@@ -61,15 +61,16 @@ def test_list_credentials_returns_secret_free_metadata_and_strategy(api):
     credential = payload["credentials"][0]
     assert set(credential) == {
         "id", "label", "source", "auth_type", "status", "cooldown_until",
-        "removable", "renameable",
+        "removable", "renameable", "masked",
     }
     assert credential["id"]
-    assert credential | {"id": "ignored"} == {
+    assert credential | {"id": "ignored", "masked": "ignored"} == {
         "id": "ignored",
         "label": "BONZAI_API_KEY",
         "source": "env:BONZAI_API_KEY",
         "auth_type": "api_key",
         "status": "ok",
+        "masked": "ignored",
         "cooldown_until": None,
         "removable": False,
         "renameable": False,
@@ -215,6 +216,30 @@ def test_strategy_can_be_read_and_written(api, strategy):
 def test_strategy_rejects_unknown_value(api):
     _module, client, _home = api
     assert client.put("/strategy", json={"strategy": "invented"}).status_code == 422
+
+
+def test_sync_alias_preserves_custom_model(api):
+    _module, client, home = api
+    import yaml
+    cfg_file = home / "config.yaml"
+    cfg = {
+        "model_aliases": {
+            "custom-client": {
+                "model": "claude-sonnet-5",
+                "provider": "custom",
+                "base_url": "https://api-v2.bonzai.iodigital.com",
+                "key_env": "BONZAI_CUSTOM_CLIENT_API_KEY",
+            }
+        }
+    }
+    cfg_file.write_text(yaml.safe_dump(cfg))
+
+    # Adding credential with same label syncs without clobbering model
+    response = client.post("/credentials", json={"label": "Custom Client", "api_key": "custom-secret"})
+    assert response.status_code == 201
+
+    updated_cfg = yaml.safe_load(cfg_file.read_text())
+    assert updated_cfg["model_aliases"]["custom-client"]["model"] == "claude-sonnet-5"
 
 
 def test_key_manager_manifests_exist_and_reference_dashboard_api():
