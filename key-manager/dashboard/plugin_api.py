@@ -352,3 +352,54 @@ def write_strategy(request: StrategyRequest) -> dict:
     config["credential_pool_strategies"] = strategies
     save_config(config)
     return {"strategy": request.strategy}
+
+
+def _session_keys_path() -> Path:
+    return get_hermes_home() / "bonzai_session_keys.json"
+
+
+def _load_session_keys() -> dict[str, str]:
+    path = _session_keys_path()
+    if not path.is_file():
+        return {}
+    try:
+        import json
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_session_key(session_id: str, slug: str) -> None:
+    path = _session_keys_path()
+    data = _load_session_keys()
+    data[session_id] = slug
+    try:
+        import json
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+@router.get("/sessions")
+def get_all_session_keys() -> dict:
+    return {"sessions": _load_session_keys()}
+
+
+@router.get("/sessions/{session_id}")
+def get_session_key(session_id: str) -> dict:
+    keys = _load_session_keys()
+    slug = keys.get(session_id, "io")
+    return {"session_id": session_id, "slug": slug}
+
+
+class SetSessionKeyRequest(BaseModel):
+    slug: str
+
+
+@router.post("/sessions/{session_id}")
+def set_session_key(session_id: str, request: SetSessionKeyRequest) -> dict:
+    slug = request.slug.strip().lower()
+    _save_session_key(session_id, slug)
+    return {"session_id": session_id, "slug": slug}

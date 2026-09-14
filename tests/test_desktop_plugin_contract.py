@@ -18,11 +18,11 @@ def test_status_chip_is_an_interactive_menu_entrypoint():
     assert "jsx(Manager" in source
 
 
-def test_status_chip_tracks_session_provider_events():
+def test_status_chip_tracks_active_session():
     source = PLUGIN.read_text()
 
-    assert 'host.onEvent("session.info"' in source
-    assert "sessionStatus.set({" in source
+    assert "host.state.activeSessionId" in source
+    assert 'request(ctx, "/sessions")' in source
 
 
 def test_desktop_plugin_uses_slash_exec_contract():
@@ -40,5 +40,4 @@ def test_desktop_plugin_exposes_client_selection_and_add_flows():
     assert "Active In This Chat" in source
     assert "Active in chat" in source
     assert "+ Add Client Key" in source
-    assert "eventSessionId !== activeSessionId" in source
     assert "entries.map(" in source

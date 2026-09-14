@@ -242,6 +242,25 @@ def test_sync_alias_preserves_custom_model(api):
     assert updated_cfg["model_aliases"]["custom-client"]["model"] == "claude-sonnet-5"
 
 
+def test_session_key_assignments_can_be_read_and_set(api):
+    _module, client, home = api
+
+    # Default is "io"
+    res = client.get("/sessions/test-chat-1")
+    assert res.status_code == 200
+    assert res.json()["slug"] == "io"
+
+    # Set to "landal"
+    set_res = client.post("/sessions/test-chat-1", json={"slug": "landal"})
+    assert set_res.status_code == 200
+    assert set_res.json()["slug"] == "landal"
+
+    # Read all
+    all_res = client.get("/sessions")
+    assert all_res.status_code == 200
+    assert all_res.json()["sessions"]["test-chat-1"] == "landal"
+
+
 def test_key_manager_manifests_exist_and_reference_dashboard_api():
     plugin_manifest = (REPO / "key-manager" / "plugin.yaml").read_text()
     dashboard = json.loads((REPO / "key-manager" / "dashboard" / "manifest.json").read_text())

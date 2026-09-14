@@ -12,7 +12,6 @@ import {
   Separator,
   STATUSBAR_AREAS,
   StatusDot,
-  atom,
   host,
   useQuery,
   useQueryClient,
@@ -23,7 +22,7 @@ import { jsx, jsxs } from "react/jsx-runtime";
 
 const PLUGIN_ID = "bonzai-key-manager";
 const QUERY_KEY = [PLUGIN_ID, "credentials"];
-const sessionStatus = atom({ provider: "", model: "", alias: "", running: false });
+const SESSIONS_QUERY_KEY = [PLUGIN_ID, "sessions"];
 
 const styles = {
   pane: {
@@ -157,29 +156,19 @@ function credentialLabel(entry, index) {
   return raw;
 }
 
+function credentialSlug(entry) {
+  const raw = String(entry.label ?? entry.name ?? entry.display_name ?? "");
+  if (raw === "BONZAI_API_KEY" || raw.toLowerCase() === "io" || raw.toLowerCase() === "default") {
+    return "io";
+  }
+  return raw.toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9-]/g, "");
+}
+
 function isManual(entry) {
   const source = String(entry.source ?? "").toLowerCase();
   if (entry.manual === true) return true;
   if (entry.removable === false) return false;
   return !source.includes("env") && !source.includes("environment");
-}
-
-function isEntryActive(entry, index, session) {
-  const rawLabel = String(entry.label ?? entry.name ?? "");
-  const slug = (rawLabel === "BONZAI_API_KEY" || rawLabel.toLowerCase() === "io" || rawLabel.toLowerCase() === "default")
-    ? "io"
-    : rawLabel.toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9-]/g, "");
-
-  const currentAlias = (session.alias || "").toLowerCase();
-  const currentProvider = (session.provider || "").toLowerCase();
-
-  if (currentAlias) {
-    return currentAlias === slug;
-  }
-  if (currentProvider === "bonzai" || currentProvider === "custom") {
-    return slug === "io";
-  }
-  return false;
 }
 
 async function request(ctx, path, options) {
@@ -190,25 +179,37 @@ async function request(ctx, path, options) {
   }
 }
 
-export function BonzaiStatusLabel() {
-  const session = useValue(sessionStatus);
-  const isBonzai = session.provider === "bonzai" || session.provider === "custom" || Boolean(session.alias);
+export function BonzaiStatusLabel({ ctx }) {
+  const activeSessionId = useValue(host.state.activeSessionId);
+  const profile = useValue(host.state.profile);
 
-  if (!isBonzai && session.provider) {
-    return jsxs("span", {
-      style: { display: "inline-flex", alignItems: "center", gap: 5, opacity: 0.75 },
-      children: [
-        jsx(StatusDot, { tone: "muted" }),
-        "Bonzai · Inactive",
-      ],
-    });
-  }
+  const credentialsQuery = useQuery({
+    queryKey: [...QUERY_KEY, profile],
+    queryFn: () => request(ctx, "/credentials"),
+  });
+  const sessionsQuery = useQuery({
+    queryKey: [...SESSIONS_QUERY_KEY, profile],
+    queryFn: () => request(ctx, "/sessions"),
+    refetchInterval: 5000,
+  });
+
+  const entries = useMemo(
+    () => credentialsFrom(credentialsQuery.data),
+    [credentialsQuery.data],
+  );
+
+  const sessionsData = unwrap(sessionsQuery.data);
+  const sessionMap = (sessionsData && typeof sessionsData === "object" && sessionsData.sessions) || {};
+  const activeSlug = (activeSessionId && sessionMap[activeSessionId]) || "io";
 
   let activeLabel = "iO (Default)";
-  if (session.alias) {
-    activeLabel = session.alias === "io" ? "iO (Default)" : session.alias;
-  } else if (session.model) {
-    activeLabel = session.model;
+  if (activeSlug !== "io") {
+    const found = entries.find((e) => credentialSlug(e) === activeSlug);
+    if (found) {
+      activeLabel = credentialLabel(found, 0);
+    } else {
+      activeLabel = activeSlug;
+    }
   }
 
   return jsxs("span", {
@@ -220,10 +221,11 @@ export function BonzaiStatusLabel() {
   });
 }
 
-function KeyRow({ ctx, entry, index, session, busy, onSelect, onRemoved }) {
+function KeyRow({ ctx, entry, index, activeSlug, busy, onSelect, onRemoved }) {
   const id = credentialId(entry, index);
   const label = credentialLabel(entry, index);
-  const active = isEntryActive(entry, index, session);
+  const slug = credentialSlug(entry);
+  const active = slug === activeSlug;
   const manual = isManual(entry);
   const [hover, setHover] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -312,7 +314,6 @@ function Manager({ ctx }) {
   const nameInputRef = useRef(null);
   const profile = useValue(host.state.profile);
   const activeSessionId = useValue(host.state.activeSessionId);
-  const session = useValue(sessionStatus);
 
   const [adding, setAdding] = useState(false);
   const [newLabel, setNewLabel] = useState("");
@@ -322,7 +323,11 @@ function Manager({ ctx }) {
   const credentials = useQuery({
     queryKey: [...QUERY_KEY, profile],
     queryFn: () => request(ctx, "/credentials"),
-    refetchInterval: 15000,
+  });
+  const sessionsQuery = useQuery({
+    queryKey: [...SESSIONS_QUERY_KEY, profile],
+    queryFn: () => request(ctx, "/sessions"),
+    refetchInterval: 5000,
   });
 
   const entries = useMemo(
@@ -330,8 +335,25 @@ function Manager({ ctx }) {
     [credentials.data],
   );
 
+  const sessionsData = unwrap(sessionsQuery.data);
+  const sessionMap = (sessionsData && typeof sessionsData === "object" && sessionsData.sessions) || {};
+  const activeSlug = (activeSessionId && sessionMap[activeSessionId]) || "io";
+
+  let activeLabel = "iO (Default)";
+  if (activeSlug !== "io") {
+    const found = entries.find((e) => credentialSlug(e) === activeSlug);
+    if (found) {
+      activeLabel = credentialLabel(found, 0);
+    } else {
+      activeLabel = activeSlug;
+    }
+  }
+
   const refresh = async () => {
-    await queryClient.invalidateQueries({ queryKey: QUERY_KEY });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
+      queryClient.invalidateQueries({ queryKey: SESSIONS_QUERY_KEY }),
+    ]);
   };
 
   const switchKey = async (entry, index) => {
@@ -341,19 +363,22 @@ function Manager({ ctx }) {
     }
     setBusy(true);
     const id = credentialId(entry, index);
-    const rawLabel = String(entry.label ?? entry.name ?? "");
-    let slug = (rawLabel === "BONZAI_API_KEY" || rawLabel.toLowerCase() === "io" || rawLabel.toLowerCase() === "default")
-      ? "io"
-      : rawLabel.toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9-]/g, "");
+    const slug = credentialSlug(entry);
+    const display = credentialLabel(entry, index);
+
+    // Optimistically update session keys query cache
+    queryClient.setQueryData([...SESSIONS_QUERY_KEY, profile], (old) => {
+      const current = (old && typeof old === "object" && old.sessions) ? old.sessions : {};
+      return { sessions: { ...current, [activeSessionId]: slug } };
+    });
 
     try {
-      const res = await request(ctx, `/credentials/${encodeURIComponent(id)}/activate`, {
+      await request(ctx, `/sessions/${encodeURIComponent(activeSessionId)}`, {
         method: "POST",
+        body: { slug },
       });
-      const data = unwrap(res);
-      if (data?.slug) slug = data.slug;
     } catch {
-      // Fallback to computed slug
+      // Background save failed; continue with slash command
     }
 
     try {
@@ -362,19 +387,12 @@ function Manager({ ctx }) {
         session_id: activeSessionId,
       });
 
-      // Optimistic update
-      sessionStatus.set({
-        ...sessionStatus.get(),
-        provider: "bonzai",
-        alias: slug === "io" ? "io" : slug,
-      });
-
-      const display = credentialLabel(entry, index);
       host.notify({ kind: "success", message: `Switched this chat to ${display}` });
     } catch (err) {
       host.notify({ kind: "error", message: `Could not switch key: ${messageOf(err)}` });
     } finally {
       setBusy(false);
+      refresh();
     }
   };
 
@@ -410,11 +428,6 @@ function Manager({ ctx }) {
     }
   };
 
-  const isBonzai = session.provider === "bonzai" || session.provider === "custom" || Boolean(session.alias);
-  const activeLabel = session.alias
-    ? (session.alias === "io" ? "iO (Default)" : session.alias)
-    : (isBonzai ? "iO (Default)" : null);
-
   return jsx("div", {
     "data-bonzai-key-manager": "true",
     style: styles.pane,
@@ -428,21 +441,13 @@ function Manager({ ctx }) {
             style: styles.headerBox,
             children: [
               jsx("span", { style: styles.headerTitle, children: "Active In This Chat" }),
-              activeLabel
-                ? jsxs("div", {
-                    style: styles.headerStatus,
-                    children: [
-                      jsx(StatusDot, { tone: "good" }),
-                      activeLabel,
-                    ],
-                  })
-                : jsxs("div", {
-                    style: { ...styles.headerStatus, color: "var(--ui-text-warning, #d97706)" },
-                    children: [
-                      jsx(StatusDot, { tone: "warn" }),
-                      "Bonzai is not active in this chat",
-                    ],
-                  }),
+              jsxs("div", {
+                style: styles.headerStatus,
+                children: [
+                  jsx(StatusDot, { tone: "good" }),
+                  activeLabel,
+                ],
+              }),
             ],
           }),
 
@@ -473,7 +478,7 @@ function Manager({ ctx }) {
                       ctx,
                       entry,
                       index,
-                      session,
+                      activeSlug,
                       busy,
                       onSelect: switchKey,
                       onRemoved: refresh,
@@ -550,22 +555,6 @@ export default {
   description: "Select and manage client API keys per chat session.",
   defaultEnabled: true,
   register(ctx) {
-    const disposeProvider = host.onEvent("session.info", (event) => {
-      const activeSessionId = host.state.activeSessionId.get();
-      const eventSessionId = String(event?.session_id ?? "");
-      if (eventSessionId && activeSessionId && eventSessionId !== activeSessionId) return;
-      const payload = event?.payload ?? {};
-      const provider = String(payload.provider ?? "").trim().toLowerCase();
-      const model = String(payload.model ?? "").trim();
-      const alias = String(payload.model_alias ?? "").trim();
-      sessionStatus.set({
-        provider,
-        model,
-        alias,
-        running: Boolean(payload.running),
-      });
-    });
-
     ctx.registerMany([
       {
         id: "status",
@@ -573,7 +562,7 @@ export default {
         order: 82,
         data: {
           id: "bonzai-key-manager.status",
-          label: jsx(BonzaiStatusLabel, {}),
+          label: jsx(BonzaiStatusLabel, { ctx }),
           title: "Bonzai Keys & Client Selection",
           variant: "menu",
           menuAlign: "end",
@@ -604,9 +593,5 @@ export default {
         },
       },
     ]);
-
-    return () => {
-      disposeProvider();
-    };
   },
 };
