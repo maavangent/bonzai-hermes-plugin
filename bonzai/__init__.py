@@ -415,11 +415,11 @@ bonzai = BonzaiProfile(
     # for large writes (full files, plans, long refactors). The old 8192 cut
     # off long Claude/GPT responses.
     default_max_tokens=32768,
-    # Bonzai's OpenAI-compatible /models response currently reports 4,096 for
-    # Gemini 3.7 Flash even though the upstream model supports a 1M context.
-    # Hermes refuses anything below 64K before a new session can start, so keep
-    # this provider-scoped declaration until Bonzai publishes correct metadata.
-    # This is a context-window declaration, not a request-size override.
+    # Bonzai's OpenAI-compatible gateway accepted a harmless image probe for
+    # all 40 current shortlist models. Vision is therefore a provider-wide
+    # capability; per-model context/output limits still come from the catalog.
+    supports_vision=True,
+    supports_vision_tool_messages=True,
     model_capabilities={
         "gemini-3.7-flash": {"context_window": 1_048_576},
     },

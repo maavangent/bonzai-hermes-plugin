@@ -11,6 +11,8 @@
 - Add installer regression coverage for native provider resolution and legacy overlay cleanup.
 - **Output-token probe:** all 40 models in the current shortlist accepted a `max_tokens=32768` probe request. The provider keeps conservative catalog-derived caps for `gpt-4o` and `gpt-4o-mini`, whose metadata reports a 16,384 output limit.
 
+- **Capability probes:** all 40 shortlisted models accepted harmless tool-schema and 1×1 image probes. Bonzai is now marked as vision-capable at provider level; tool support remains Hermes' default for chat models.
+
 ### Documentation
 
 - Documented the safe colleague recovery command and the difference between a local plugin installation failure and a Bonzai-side HTTP 500.

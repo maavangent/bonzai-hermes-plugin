@@ -69,7 +69,9 @@ def test_declared_gemini_context_window_is_hermes_compatible():
     assert module.bonzai.model_capabilities["gemini-3.7-flash"]["context_window"] >= 64_000
 
 
-def test_live_catalog_metadata_can_update_capabilities():
+def test_capability_probe_marks_provider_vision_support():
+    assert module.bonzai.supports_vision is True
+    assert module.bonzai.supports_vision_tool_messages is True
     module._update_model_capabilities([
         {"id": "claude-sonnet-5", "mode": "chat", "max_input_tokens": 1_000_000, "max_output_tokens": 128_000},
         {"id": "image-model", "mode": "image_generation", "max_input_tokens": 32_000},
