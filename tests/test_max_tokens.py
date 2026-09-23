@@ -32,10 +32,11 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
-def test_models_with_no_measured_lower_ceiling_keep_the_default():
-    # The latest probe accepted 32768 for every model in the 40-model shortlist.
-    assert module.bonzai.get_max_tokens("gpt-4o") == 32768
-    assert module.bonzai.get_max_tokens("gpt-4o-mini") == 32768
+def test_models_with_catalog_reported_lower_ceiling_keep_their_cap():
+    # The catalog reports 16,384 for these models; keep the conservative cap
+    # even though a gateway probe accepted a 32,768 request.
+    assert module.bonzai.get_max_tokens("gpt-4o") == 16384
+    assert module.bonzai.get_max_tokens("gpt-4o-mini") == 16384
 
 
 def test_models_without_a_known_ceiling_keep_the_generous_default():
@@ -52,10 +53,10 @@ def test_a_missing_model_name_does_not_raise():
     assert module.bonzai.get_max_tokens(None) == 32768
 
 
-def test_date_pinned_and_routed_spellings_keep_the_default():
+def test_date_pinned_and_routed_spellings_resolve_to_the_catalog_cap():
     # The picker hides these, but a user can still have one pinned in config.
-    assert module.bonzai.get_max_tokens("gpt-4o-2024-08-06") == 32768
-    assert module.bonzai.get_max_tokens("gpt-4o-mini-bedrock") == 32768
+    assert module.bonzai.get_max_tokens("gpt-4o-2024-08-06") == 16384
+    assert module.bonzai.get_max_tokens("gpt-4o-mini-bedrock") == 16384
 
 
 def test_every_capped_entry_is_below_the_profile_default():
@@ -66,3 +67,15 @@ def test_every_capped_entry_is_below_the_profile_default():
 
 def test_declared_gemini_context_window_is_hermes_compatible():
     assert module.bonzai.model_capabilities["gemini-3.7-flash"]["context_window"] >= 64_000
+
+
+def test_live_catalog_metadata_can_update_capabilities():
+    module._update_model_capabilities([
+        {"id": "claude-sonnet-5", "mode": "chat", "max_input_tokens": 1_000_000, "max_output_tokens": 128_000},
+        {"id": "image-model", "mode": "image_generation", "max_input_tokens": 32_000},
+    ])
+    assert module.bonzai.model_capabilities["claude-sonnet-5"] == {
+        "context_window": 1_000_000,
+        "max_output_tokens": 128_000,
+    }
+    assert "image-model" not in module.bonzai.model_capabilities

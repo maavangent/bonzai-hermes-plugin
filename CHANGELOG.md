@@ -9,7 +9,7 @@
 - Remove an old Bonzai overlay automatically when upgrading on a Hermes version with native provider resolution. This prevents a later Hermes update from silently removing the provider workaround and breaking Bonzai.
 - Keep the overlay fallback for older Hermes versions that still need it.
 - Add installer regression coverage for native provider resolution and legacy overlay cleanup.
-- **Output-token probe:** all 40 models in the current shortlist accepted `max_tokens=32768`; no model-specific lower caps are currently configured.
+- **Output-token probe:** all 40 models in the current shortlist accepted a `max_tokens=32768` probe request. The provider keeps conservative catalog-derived caps for `gpt-4o` and `gpt-4o-mini`, whose metadata reports a 16,384 output limit.
 
 ### Documentation
 

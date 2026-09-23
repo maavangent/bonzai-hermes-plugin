@@ -252,7 +252,12 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
 # models whose ceiling is BELOW default_max_tokens need an entry; everything
 # else accepts the generous default. Re-probe after Bonzai adds a backend:
 #   python3 tools/probe_max_tokens.py <model> [<model> ...]
-_MODEL_MAX_TOKENS: dict = {}
+_MODEL_MAX_TOKENS: dict = {
+    # Bonzai's catalog reports a 16,384 output limit for these models. Keep
+    # explicit caps even though the gateway's probe currently accepts 32,768.
+    "gpt-4o": 16384,
+    "gpt-4o-mini": 16384,
+}
 
 
 def _max_tokens_key(model: str | None) -> str:
@@ -270,9 +275,36 @@ def _max_tokens_key(model: str | None) -> str:
     return m
 
 
+def _update_model_capabilities(items: list[dict]) -> None:
+    """Import trustworthy limits from Bonzai's catalog into Hermes metadata.
+
+    Bonzai exposes ``max_input_tokens`` and ``max_output_tokens`` on current
+    chat entries. Keeping these values on the registered profile lets Hermes
+    use them for startup validation and request sizing instead of applying
+    generic family guesses. Entries without metadata are left untouched.
+    """
+    capabilities: dict[str, dict] = {}
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            continue
+        if item.get("mode") != "chat":
+            continue
+        model_id = item["id"]
+        entry: dict = {}
+        context = item.get("max_input_tokens")
+        output = item.get("max_output_tokens")
+        if isinstance(context, int) and context > 0:
+            entry["context_window"] = context
+        if isinstance(output, int) and output > 0:
+            entry["max_output_tokens"] = output
+        if entry:
+            capabilities[model_id] = entry
+    if capabilities:
+        bonzai.model_capabilities.update(capabilities)
+
+
 class BonzaiProfile(ProviderProfile):
     """Bonzai (api-v2.bonzai.iodigital.com) provider profile."""
-
     def get_max_tokens(self, model: str | None) -> int | None:
         """Per-model completion-token ceiling, falling back to the default.
 
@@ -344,6 +376,7 @@ class BonzaiProfile(ProviderProfile):
 
             if raw_models:
                 shortlist = _build_smart_shortlist(raw_models)
+                _update_model_capabilities(items)
                 _CACHE["models"] = shortlist
                 _CACHE["ts"] = now
                 _store_offline_models(shortlist)
