@@ -246,6 +246,9 @@ def test_check_requires_backend_desktop_file_and_enabled_state(env):
     installer.PLUGIN_DIR.mkdir(parents=True)
     installer.add_overlay()
     installer.KEY_MANAGER_DIR.mkdir(parents=True)
+    (installer.KEY_MANAGER_DIR / "plugin.yaml").write_text(
+        "name: bonzai-key-manager\nkind: backend\n"
+    )
     installer.DESKTOP_PLUGIN_FILE.parent.mkdir(parents=True)
     installer.DESKTOP_PLUGIN_FILE.write_text("installed")
     (home / "config.yaml").write_text(yaml.safe_dump({
@@ -255,6 +258,21 @@ def test_check_requires_backend_desktop_file_and_enabled_state(env):
     assert installer.do_check() == 0
 
     installer.DESKTOP_PLUGIN_FILE.unlink()
+    assert installer.do_check() == 1
+
+
+def test_check_rejects_key_manager_with_wrong_manifest_kind(env):
+    home, installer, _providers = env
+    installer.PLUGIN_DIR.mkdir(parents=True)
+    installer.add_overlay()
+    installer.KEY_MANAGER_DIR.mkdir(parents=True)
+    installer.DESKTOP_PLUGIN_FILE.parent.mkdir(parents=True)
+    installer.DESKTOP_PLUGIN_FILE.write_text("installed")
+    (installer.KEY_MANAGER_DIR / "plugin.yaml").write_text("name: bonzai-key-manager\nkind: standalone\n")
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "plugins": {"enabled": ["bonzai-key-manager"]}
+    }))
+
     assert installer.do_check() == 1
 
 

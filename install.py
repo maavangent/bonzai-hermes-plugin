@@ -634,7 +634,19 @@ def do_check() -> int:
         problems += 1
 
     if KEY_MANAGER_DIR.is_dir():
-        log(f"{OK}Key Manager backend installed at {KEY_MANAGER_DIR}")
+        manifest = KEY_MANAGER_DIR / "plugin.yaml"
+        if manifest.is_file():
+            try:
+                kind = yaml.safe_load(manifest.read_text(encoding="utf-8")).get("kind")
+            except Exception:
+                kind = None
+        else:
+            kind = None
+        if kind == "backend":
+            log(f"{OK}Key Manager backend installed at {KEY_MANAGER_DIR}")
+        else:
+            log(f"{WARN}Key Manager manifest is not kind: backend")
+            problems += 1
     else:
         log(f"{WARN}Key Manager backend NOT installed (expected {KEY_MANAGER_DIR})")
         problems += 1
