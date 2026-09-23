@@ -1,7 +1,10 @@
 """Secret-safe backend API for the Bonzai Key Manager dashboard."""
 from __future__ import annotations
 
+import json
+import os
 import re
+import tempfile
 import urllib.error
 import urllib.request
 import uuid
@@ -358,26 +361,55 @@ def _session_keys_path() -> Path:
     return get_hermes_home() / "bonzai_session_keys.json"
 
 
+def _session_keys_lock():
+    """Cross-process lock for the small session assignment store."""
+    try:
+        from filelock import FileLock
+        return FileLock(str(_session_keys_path()) + ".lock")
+    except ImportError:
+        from contextlib import nullcontext
+        return nullcontext()
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+
+
 def _load_session_keys() -> dict[str, str]:
     path = _session_keys_path()
     if not path.is_file():
         return {}
     try:
-        import json
         data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        return {
+            str(session_id): str(slug)
+            for session_id, slug in data.items()
+            if isinstance(session_id, str) and isinstance(slug, str)
+        } if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 
 def _save_session_key(session_id: str, slug: str) -> None:
     path = _session_keys_path()
-    data = _load_session_keys()
-    data[session_id] = slug
     try:
-        import json
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        with _session_keys_lock():
+            data = _load_session_keys()
+            data[session_id] = slug
+            _atomic_write_json(path, data)
     except Exception:
         pass
 
@@ -400,6 +432,11 @@ class SetSessionKeyRequest(BaseModel):
 
 @router.post("/sessions/{session_id}")
 def set_session_key(session_id: str, request: SetSessionKeyRequest) -> dict:
+    session_id = session_id.strip()
     slug = request.slug.strip().lower()
+    if not session_id or len(session_id) > 256 or not re.fullmatch(r"[A-Za-z0-9._:-]+", session_id):
+        raise HTTPException(status_code=422, detail="Invalid session id")
+    if not slug or len(slug) > 100 or not re.fullmatch(r"[a-z0-9-]+", slug):
+        raise HTTPException(status_code=422, detail="Invalid key alias")
     _save_session_key(session_id, slug)
     return {"session_id": session_id, "slug": slug}

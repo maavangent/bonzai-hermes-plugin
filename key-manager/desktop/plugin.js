@@ -180,7 +180,7 @@ async function request(ctx, path, options) {
 }
 
 export function BonzaiStatusLabel({ ctx }) {
-  const activeSessionId = useValue(host.state.activeSessionId);
+  const focusedSessionId = useValue(host.state.focusedSessionId);
   const profile = useValue(host.state.profile);
 
   const credentialsQuery = useQuery({
@@ -200,7 +200,7 @@ export function BonzaiStatusLabel({ ctx }) {
 
   const sessionsData = unwrap(sessionsQuery.data);
   const sessionMap = (sessionsData && typeof sessionsData === "object" && sessionsData.sessions) || {};
-  const activeSlug = (activeSessionId && sessionMap[activeSessionId]) || "io";
+  const activeSlug = (focusedSessionId && sessionMap[focusedSessionId]) || "io";
 
   let activeLabel = "iO (Default)";
   if (activeSlug !== "io") {
@@ -313,7 +313,7 @@ function Manager({ ctx }) {
   const queryClient = useQueryClient();
   const nameInputRef = useRef(null);
   const profile = useValue(host.state.profile);
-  const activeSessionId = useValue(host.state.activeSessionId);
+  const focusedSessionId = useValue(host.state.focusedSessionId);
 
   const [adding, setAdding] = useState(false);
   const [newLabel, setNewLabel] = useState("");
@@ -337,7 +337,7 @@ function Manager({ ctx }) {
 
   const sessionsData = unwrap(sessionsQuery.data);
   const sessionMap = (sessionsData && typeof sessionsData === "object" && sessionsData.sessions) || {};
-  const activeSlug = (activeSessionId && sessionMap[activeSessionId]) || "io";
+  const activeSlug = (focusedSessionId && sessionMap[focusedSessionId]) || "io";
 
   let activeLabel = "iO (Default)";
   if (activeSlug !== "io") {
@@ -357,7 +357,7 @@ function Manager({ ctx }) {
   };
 
   const switchKey = async (entry, index) => {
-    if (!activeSessionId) {
+    if (!focusedSessionId) {
       host.notify({ kind: "warning", message: "No active chat session selected." });
       return;
     }
@@ -369,11 +369,11 @@ function Manager({ ctx }) {
     // Optimistically update session keys query cache
     queryClient.setQueryData([...SESSIONS_QUERY_KEY, profile], (old) => {
       const current = (old && typeof old === "object" && old.sessions) ? old.sessions : {};
-      return { sessions: { ...current, [activeSessionId]: slug } };
+      return { sessions: { ...current, [focusedSessionId]: slug } };
     });
 
     try {
-      await request(ctx, `/sessions/${encodeURIComponent(activeSessionId)}`, {
+      await request(ctx, `/sessions/${encodeURIComponent(focusedSessionId)}`, {
         method: "POST",
         body: { slug },
       });
@@ -384,7 +384,7 @@ function Manager({ ctx }) {
     try {
       await host.request("slash.exec", {
         command: `/model ${slug}`,
-        session_id: activeSessionId,
+        session_id: focusedSessionId,
       });
 
       host.notify({ kind: "success", message: `Switched this chat to ${display}` });

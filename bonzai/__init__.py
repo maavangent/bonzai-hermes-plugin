@@ -252,10 +252,7 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
 # models whose ceiling is BELOW default_max_tokens need an entry; everything
 # else accepts the generous default. Re-probe after Bonzai adds a backend:
 #   python3 tools/probe_max_tokens.py <model> [<model> ...]
-_MODEL_MAX_TOKENS: dict = {
-    "gpt-4o": 16384,
-    "gpt-4o-mini": 16384,
-}
+_MODEL_MAX_TOKENS: dict = {}
 
 
 def _max_tokens_key(model: str | None) -> str:
@@ -385,6 +382,14 @@ bonzai = BonzaiProfile(
     # for large writes (full files, plans, long refactors). The old 8192 cut
     # off long Claude/GPT responses.
     default_max_tokens=32768,
+    # Bonzai's OpenAI-compatible /models response currently reports 4,096 for
+    # Gemini 3.7 Flash even though the upstream model supports a 1M context.
+    # Hermes refuses anything below 64K before a new session can start, so keep
+    # this provider-scoped declaration until Bonzai publishes correct metadata.
+    # This is a context-window declaration, not a request-size override.
+    model_capabilities={
+        "gemini-3.7-flash": {"context_window": 1_048_576},
+    },
     # Deliberately EMPTY. Hermes merges fallback_models AHEAD of the live list
     # (hermes_cli/models.py::provider_model_ids), so any hand-written tuple here
     # pins a stale order to the top of the picker and buries newly released

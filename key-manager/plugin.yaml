@@ -1,6 +1,8 @@
 name: bonzai-key-manager
-kind: standalone
+kind: backend
 version: 1.0.0
+python_dependencies:
+  - filelock>=3.0
 description: Securely manage Bonzai credential rotation
 manifest_version: 2
 api_version: 1

@@ -261,10 +261,16 @@ def test_session_key_assignments_can_be_read_and_set(api):
     assert all_res.json()["sessions"]["test-chat-1"] == "landal"
 
 
+def test_session_key_assignments_reject_invalid_values(api):
+    _module, client, _home = api
+    assert client.post("/sessions/../escape", json={"slug": "valid"}).status_code in (404, 405, 422)
+    assert client.post("/sessions/valid", json={"slug": "../bad"}).status_code == 422
+
+
 def test_key_manager_manifests_exist_and_reference_dashboard_api():
     plugin_manifest = (REPO / "key-manager" / "plugin.yaml").read_text()
     dashboard = json.loads((REPO / "key-manager" / "dashboard" / "manifest.json").read_text())
 
-    assert "manifest_version: 2" in plugin_manifest
+    assert "kind: backend" in plugin_manifest
     assert dashboard["api"] == "plugin_api.py"
     assert (REPO / "key-manager" / "__init__.py").exists()

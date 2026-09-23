@@ -21,7 +21,7 @@ def test_status_chip_is_an_interactive_menu_entrypoint():
 def test_status_chip_tracks_active_session():
     source = PLUGIN.read_text()
 
-    assert "host.state.activeSessionId" in source
+    assert "host.state.focusedSessionId" in source
     assert 'request(ctx, "/sessions")' in source
 
 
@@ -30,7 +30,7 @@ def test_desktop_plugin_uses_slash_exec_contract():
 
     assert 'host.request("slash.exec"' in source
     assert "`/model ${slug}`" in source
-    assert "host.state.activeSessionId" in source
+    assert "host.state.focusedSessionId" in source
     assert "session_id:" in source
 
 

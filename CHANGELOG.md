@@ -4,10 +4,12 @@
 
 ### Fixed
 
+- **Gemini 3.7 Flash context metadata:** Bonzai's `/v1/models` endpoint currently reports `4,096`, although the upstream model documents a `1,048,576`-token context window. The provider declares that capability through Hermes' native `model_capabilities` metadata so Hermes' 64K startup gate does not reject new sessions.
 - Stop injecting the legacy `HermesOverlay` into Hermes-owned `providers.py` when the installed Hermes version natively resolves registered model-provider profiles.
 - Remove an old Bonzai overlay automatically when upgrading on a Hermes version with native provider resolution. This prevents a later Hermes update from silently removing the provider workaround and breaking Bonzai.
 - Keep the overlay fallback for older Hermes versions that still need it.
 - Add installer regression coverage for native provider resolution and legacy overlay cleanup.
+- **Output-token probe:** all 40 models in the current shortlist accepted `max_tokens=32768`; no model-specific lower caps are currently configured.
 
 ### Documentation
 

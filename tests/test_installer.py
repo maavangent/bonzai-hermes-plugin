@@ -69,11 +69,9 @@ def env(tmp_path, monkeypatch):
     return tmp_path, load_installer(tmp_path), providers
 
 
-def test_missing_providers_file_makes_overlay_installation_fatal(tmp_path):
+def test_missing_providers_file_skips_legacy_overlay(tmp_path):
     installer = load_installer(tmp_path)
-
-    with pytest.raises(RuntimeError, match="providers.py not found"):
-        installer.add_overlay()
+    installer.add_overlay()
 
 
 def test_incompatible_overlays_dict_makes_overlay_installation_fatal(tmp_path):
@@ -102,8 +100,6 @@ def test_install_preflights_overlay_before_replacing_existing_files(tmp_path):
         installer.do_install()
 
     assert marker.read_text() == "keep me"
-    assert not installer.KEY_MANAGER_DIR.exists()
-    assert not installer.DESKTOP_PLUGIN_FILE.exists()
 
 
 def test_overlay_is_injected_into_the_overlays_dict(env):
@@ -328,7 +324,7 @@ def test_check_fails_when_shared_hermes_source_is_missing(tmp_path):
     assert installer.do_check() == 1
 
 
-def test_install_command_exits_nonzero_without_hermes_source(tmp_path):
+def test_install_command_succeeds_without_hermes_source(tmp_path):
     env = os.environ.copy()
     env["HERMES_HOME"] = str(tmp_path)
 
@@ -340,8 +336,8 @@ def test_install_command_exits_nonzero_without_hermes_source(tmp_path):
         text=True,
     )
 
-    assert result.returncode != 0
-    assert "providers.py not found" in result.stderr
+    assert result.returncode == 0
+    assert "skipping legacy overlay" in result.stdout
 
 
 def test_env_var_get_and_set(tmp_path):

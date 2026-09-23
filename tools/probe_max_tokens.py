@@ -66,7 +66,12 @@ def shortlist(key: str, ctx: ssl.SSLContext) -> list[str]:
     providers = types.ModuleType("providers")
     providers.register_provider = lambda _profile: None  # type: ignore[attr-defined]
     base = types.ModuleType("providers.base")
-    base.ProviderProfile = type("ProviderProfile", (), {})  # type: ignore[attr-defined]
+
+    class ProviderProfile:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    base.ProviderProfile = ProviderProfile  # type: ignore[attr-defined]
     sys.modules.setdefault("providers", providers)
     sys.modules.setdefault("providers.base", base)
 
@@ -81,7 +86,7 @@ def shortlist(key: str, ctx: ssl.SSLContext) -> list[str]:
     with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
         data = json.load(resp)
     ids = [m["id"] for m in (data if isinstance(data, list) else data.get("data", []))]
-    return [m for m in module._build_smart_shortlist(ids) if m != module._SEPARATOR]
+    return module._build_smart_shortlist(ids)
 
 
 def probe(model: str, key: str, ctx: ssl.SSLContext) -> tuple[int | None, str]:

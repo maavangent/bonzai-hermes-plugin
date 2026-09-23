@@ -212,6 +212,9 @@ def _native_provider_resolution_supported() -> bool:
 
 
 def add_overlay() -> None:
+    if not PROVIDERS_FILE.is_file():
+        log(f"{WARN}Hermes providers.py not found; skipping legacy overlay.")
+        return
     if _native_provider_resolution_supported():
         # Remove the legacy patch when upgrading an installation that still has
         # it. This restores Hermes-owned source to the native plugin path and
@@ -539,8 +542,9 @@ def do_install(interactive: bool = False) -> None:
         log("   Run this script from inside the repository.")
         sys.exit(1)
 
-    if not _native_provider_resolution_supported():
+    if PROVIDERS_FILE.is_file() and not _native_provider_resolution_supported():
         _overlay_content()
+
     if PLUGIN_DIR.exists():
         log("Existing plugin detected - updating to newest version...")
         shutil.rmtree(PLUGIN_DIR)
