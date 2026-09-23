@@ -69,6 +69,22 @@ def test_declared_gemini_context_window_is_hermes_compatible():
     assert module.bonzai.model_capabilities["gemini-3.7-flash"]["context_window"] >= 64_000
 
 
+def test_bonzai_vertex_gateway_error_is_server_error():
+    verdict = module._classify_bonzai_error(
+        RuntimeError("HTTP 500"),
+        status_code=500,
+        message="litellm.APIConnectionError: unable to load vertex credentials from environment",
+        model="gemini-3.7-flash",
+    )
+    assert verdict["reason"] == "server_error"
+    assert verdict["should_fallback"] is False
+    assert verdict["error_context"]["upstream_failure"] == "credential_configuration"
+
+
+def test_unrelated_bonzai_error_is_left_to_hermes():
+    assert module._classify_bonzai_error(RuntimeError("bad request"), status_code=400) is None
+
+
 def test_capability_probe_marks_provider_vision_support():
     assert module.bonzai.supports_vision is True
     assert module.bonzai.supports_vision_tool_messages is True

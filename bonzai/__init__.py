@@ -303,6 +303,47 @@ def _update_model_capabilities(items: list[dict]) -> None:
         bonzai.model_capabilities.update(capabilities)
 
 
+def _classify_bonzai_error(
+    error,
+    *,
+    status_code=None,
+    error_code=None,
+    message="",
+    body=None,
+    model=None,
+):
+    """Classify Bonzai gateway failures without exposing credential details.
+
+    Bonzai can relay upstream Vertex/LiteLLM failures as a generic 500. Keep
+    those failures in the server-error recovery path instead of treating them
+    as a bad local API key. The context is deliberately short and secret-free.
+    """
+    text = " ".join(
+        str(value or "").lower()
+        for value in (message, error_code, body, error)
+    )
+    if status_code in (500, 502) and any(
+        marker in text
+        for marker in (
+            "vertex credentials",
+            "jsondecodeerror",
+            "unable to load vertex",
+            "internal server error",
+        )
+    ):
+        return {
+            "reason": "server_error",
+            "retryable": True,
+            "should_fallback": False,
+            "error_context": {
+                "provider": "bonzai",
+                "upstream_failure": "credential_configuration",
+                "model": model,
+            },
+        }
+    return None
+
+
 class BonzaiProfile(ProviderProfile):
     """Bonzai (api-v2.bonzai.iodigital.com) provider profile."""
     def get_max_tokens(self, model: str | None) -> int | None:
@@ -420,6 +461,7 @@ bonzai = BonzaiProfile(
     # capability; per-model context/output limits still come from the catalog.
     supports_vision=True,
     supports_vision_tool_messages=True,
+    classify_api_error=_classify_bonzai_error,
     model_capabilities={
         "gemini-3.7-flash": {"context_window": 1_048_576},
     },
