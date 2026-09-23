@@ -233,9 +233,18 @@ function KeyRow({ ctx, entry, index, activeSlug, busy, onSelect, onRemoved }) {
   const masked = entry.masked || (manual ? "Manual client key" : "Default environment key");
 
   const remove = async (e) => {
-    e.stopPropagation();
+    e?.stopPropagation?.();
+    if (active) {
+      setConfirmRemove(false);
+      host.notify({
+        kind: "warning",
+        message: `Select another key in this chat before removing “${label}”.`,
+      });
+      return;
+    }
     try {
       await request(ctx, `/credentials/${encodeURIComponent(id)}`, { method: "DELETE" });
+      setConfirmRemove(false);
       onRemoved();
       host.notify({ kind: "success", message: `Removed “${label}”` });
     } catch (err) {
@@ -250,12 +259,12 @@ function KeyRow({ ctx, entry, index, activeSlug, busy, onSelect, onRemoved }) {
 
   return jsxs("div", {
     style: rowStyle,
-    onClick: () => !active && onSelect(entry, index),
     onMouseEnter: () => setHover(true),
     onMouseLeave: () => setHover(false),
     children: [
       jsxs("div", {
-        style: { display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 },
+        style: { display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, cursor: active ? "default" : "pointer" },
+        onClick: () => !active && onSelect(entry, index),
         children: [
           jsx(StatusDot, { tone: active ? "good" : "muted" }),
           jsxs("div", {
@@ -269,6 +278,8 @@ function KeyRow({ ctx, entry, index, activeSlug, busy, onSelect, onRemoved }) {
       }),
       jsxs("div", {
         style: styles.actions,
+        onClick: (e) => e.stopPropagation(),
+        onPointerDown: (e) => e.stopPropagation(),
         children: [
           active
             ? jsx(Badge, { variant: "default", children: "Active in chat" })
