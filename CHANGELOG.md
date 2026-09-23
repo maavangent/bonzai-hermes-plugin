@@ -13,6 +13,7 @@
 
 - **Capability probes:** all 40 shortlisted models accepted harmless tool-schema and 1×1 image probes. Bonzai is now marked as vision-capable at provider level; tool support remains Hermes' default for chat models.
 - Provider-specific Bonzai/Vertex gateway 500s are classified separately from local authentication failures, with secret-free recovery context.
+- The Key Manager dashboard avoids Hermes' profile-scoped numbered environment-key scan, which can raise `UnscopedSecretError` in multiplexed dashboard RPCs.
 
 ### Documentation
 

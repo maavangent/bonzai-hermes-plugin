@@ -59,6 +59,51 @@ def _ensure_provider_config() -> None:
     )
 
 
+def _pool_entries_without_env_seeding():
+    """Load the pool without triggering Hermes' profile-scoped env seeding.
+
+    Dashboard RPCs can run outside the per-turn secret scope on a multiplexed
+    gateway. The normal ``load_pool`` path probes ``BONZAI_API_KEY_2`` and Hermes
+    correctly fails closed there. The dashboard only needs persisted/manual
+    rows, so avoid that ambient-scope read and seed the default key explicitly.
+    """
+    _ensure_provider_config()
+    from agent.credential_pool import CredentialPool, PooledCredential, read_credential_pool
+
+    raw_entries = read_credential_pool(PROVIDER)
+    entries = [
+        PooledCredential.from_dict(PROVIDER, payload)
+        for payload in raw_entries
+        if isinstance(payload, dict)
+    ]
+    env_file = get_hermes_home() / ".env"
+    default_key = ""
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith(f"{API_KEY_ENV_VAR}="):
+                default_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+    if not default_key:
+        # The unnumbered default is safe to read as the dashboard's own
+        # provider credential. Never enumerate numbered siblings here: that is
+        # the profile-scoped read that breaks multiplexed dashboard RPCs.
+        default_key = os.getenv(API_KEY_ENV_VAR, "").strip()
+    existing = next((entry for entry in entries if entry.source == f"env:{API_KEY_ENV_VAR}"), None)
+    if default_key and existing is None:
+        entries.insert(0, PooledCredential(
+            provider=PROVIDER,
+            id=uuid.uuid5(uuid.NAMESPACE_URL, f"hermes:{PROVIDER}:{API_KEY_ENV_VAR}").hex[:6],
+            label=API_KEY_ENV_VAR,
+            auth_type=AUTH_TYPE_API_KEY,
+            priority=0,
+            source=f"env:{API_KEY_ENV_VAR}",
+            access_token=default_key,
+        ))
+    elif existing is not None and default_key:
+        entries = [existing] + [entry for entry in entries if entry is not existing]
+    return CredentialPool(PROVIDER, entries)
+
+
 class _NonBlankModel(BaseModel):
     @field_validator("*", mode="before")
     @classmethod
@@ -164,7 +209,7 @@ def _sync_all_aliases(pool) -> None:
 @router.get("/credentials")
 def list_credentials() -> dict:
     _ensure_provider_config()
-    pool = load_pool(PROVIDER)
+    pool = _pool_entries_without_env_seeding()
     _sync_all_aliases(pool)
     return {
         "credentials": [_public_credential(entry) for entry in pool.entries()],
@@ -224,7 +269,7 @@ def _sync_alias_for_label(label: str, api_key: str) -> None:
 def activate_credential(id: str) -> dict:
     """Ensure the alias exists in config and return the canonical slug to switch to."""
     _ensure_provider_config()
-    pool = load_pool(PROVIDER)
+    pool = _pool_entries_without_env_seeding()
     entry = _entry_by_id(pool, id.strip())
     label = str(getattr(entry, "label", "") or "")
     api_key = str(getattr(entry, "runtime_api_key", "") or "").strip()
@@ -241,7 +286,7 @@ def activate_credential(id: str) -> dict:
 @router.post("/credentials", status_code=201)
 def add_credential(request: AddCredentialRequest) -> dict:
     _ensure_provider_config()
-    pool = load_pool(PROVIDER)
+    pool = _pool_entries_without_env_seeding()
     entry = pool.add_entry(PooledCredential(
         provider=PROVIDER,
         id=uuid.uuid4().hex[:6],
@@ -268,7 +313,7 @@ class TestStoredCredentialRequest(BaseModel):
 def test_stored_credential(request: TestStoredCredentialRequest) -> dict:
     """Test an existing credential without exposing it to the renderer."""
     _ensure_provider_config()
-    pool = load_pool(PROVIDER)
+    pool = _pool_entries_without_env_seeding()
     entry = _entry_by_id(pool, request.id.strip())
     api_key = str(getattr(entry, "runtime_api_key", "") or "").strip()
     if not api_key:
@@ -279,7 +324,7 @@ def test_stored_credential(request: TestStoredCredentialRequest) -> dict:
 @router.patch("/credentials/{credential_id}")
 def rename_credential(credential_id: str, request: RenameCredentialRequest) -> dict:
     _ensure_provider_config()
-    pool = load_pool(PROVIDER)
+    pool = _pool_entries_without_env_seeding()
     entry = _manual_entry(pool, credential_id)
     updated = replace(entry, label=request.label)
     pool._replace_entry(entry, updated)
@@ -293,7 +338,7 @@ def rename_credential(credential_id: str, request: RenameCredentialRequest) -> d
 @router.delete("/credentials/{credential_id}", status_code=204)
 def remove_credential(credential_id: str) -> Response:
     _ensure_provider_config()
-    pool = load_pool(PROVIDER)
+    pool = _pool_entries_without_env_seeding()
     entry = _manual_entry(pool, credential_id)
     label = str(getattr(entry, "label", "") or "")
     index = next(i for i, item in enumerate(pool.entries(), start=1) if item.id == credential_id)
