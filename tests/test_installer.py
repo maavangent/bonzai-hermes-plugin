@@ -152,6 +152,31 @@ def test_a_hermes_update_that_dropped_the_overlay_is_detected(env):
     assert installer.overlay_missing() is False
 
 
+def test_native_provider_resolution_removes_legacy_overlay(tmp_path):
+    installer = load_installer(tmp_path)
+    providers = installer.PROVIDERS_FILE
+    providers.parent.mkdir(parents=True)
+    native_source = '''
+HERMES_OVERLAYS = {
+    "bonzai": HermesOverlay(
+        transport="openai_chat",
+        auth_type="api_key",
+    ),
+}
+def _plugin_profile_pdef(name):
+    return None
+def resolve_provider_full(name):
+    pdef = _plugin_profile_pdef(name)
+    return pdef if pdef is not None and pdef.id != "custom" else None
+'''
+    providers.write_text(native_source)
+
+    installer.add_overlay()
+
+    assert '"bonzai": HermesOverlay(' not in providers.read_text()
+    assert installer.overlay_missing() is False
+
+
 def test_overlay_is_reported_missing_when_a_hermes_update_rewrote_providers_py(env):
     _home, installer, providers = env
     installer.add_overlay()

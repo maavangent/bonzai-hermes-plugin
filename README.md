@@ -106,10 +106,28 @@ You can also configure client keys directly in your chat:
 
 If you or your colleagues already have an older version of the Bonzai plugin installed:
 
-- **Simply run the installer again.**
-- The installer is fully idempotent: it detects previous installations, replaces the plugin files with the latest version, refreshes the provider overlay, and **preserves your existing API keys and configurations**.
+- **Simply run the installer again.** The current installer is safe to run over an existing installation.
+- It replaces the plugin files, preserves existing API keys and configuration, and detects whether your Hermes version natively resolves model-provider plugins.
+- On current Hermes versions, it removes the old `HermesOverlay` workaround from Hermes-owned source. This is important because that source file can be replaced by a Hermes update.
+- On older Hermes versions, the installer keeps the compatibility fallback.
 - If an existing key is detected, the installer gives you the option to keep it, assign it to a client alias, or replace it.
 - Restart Hermes Desktop after updating.
+
+### Quick fix for colleagues
+
+**macOS / Linux**, for a fresh or broken installation:
+
+```bash
+tmp_dir="$(mktemp -d)" && git clone --depth 1 https://github.com/maavangent/bonzai-hermes-plugin "$tmp_dir/bonzai-hermes-plugin" && cd "$tmp_dir/bonzai-hermes-plugin" && python3 install.py --interactive; status=$?; rm -rf "$tmp_dir"; exit $status
+```
+
+For an existing local checkout:
+
+```bash
+git pull --ff-only && python3 install.py --interactive
+```
+
+Then restart Hermes Desktop, or run `hermes gateway restart`. The installer does not repair a Bonzai-side HTTP 500 caused by invalid upstream Vertex credentials. That requires the Bonzai service team to fix the Vertex configuration.
 
 ---
 

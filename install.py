@@ -189,7 +189,37 @@ def _overlay_content() -> tuple[str, str | None]:
     return content, new_content
 
 
+def _native_provider_resolution_supported() -> bool:
+    """Return whether this Hermes build resolves registered provider profiles.
+
+    Hermes added the generic ProviderProfile fallback to ``resolve_provider_full``
+    in the 0.21 line. On those builds Bonzai must not patch Hermes-owned source
+    files: an update can replace that file at any time and the patch is no longer
+    needed. Keep the source check deliberately narrow and fail closed for older
+    or unusual installations, where the legacy overlay remains the safe fallback.
+    """
+    if not PROVIDERS_FILE.is_file():
+        return False
+    try:
+        content = PROVIDERS_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return (
+        "def resolve_provider_full(" in content
+        and "_plugin_profile_pdef" in content
+        and 'return pdef if pdef is not None and pdef.id != "custom" else None' in content
+    )
+
+
 def add_overlay() -> None:
+    if _native_provider_resolution_supported():
+        # Remove the legacy patch when upgrading an installation that still has
+        # it. This restores Hermes-owned source to the native plugin path and
+        # prevents the next Hermes update from looking like a provider failure.
+        remove_overlay()
+        log(f"{INFO}Hermes natively resolves model-provider plugins; no overlay needed.")
+        return
+
     _content, new_content = _overlay_content()
 
     if new_content is None:
@@ -201,6 +231,8 @@ def add_overlay() -> None:
 
 
 def overlay_missing() -> bool:
+    if _native_provider_resolution_supported():
+        return False
     if not PROVIDERS_FILE.is_file():
         return False
     return '"bonzai"' not in PROVIDERS_FILE.read_text(encoding="utf-8")
@@ -507,9 +539,8 @@ def do_install(interactive: bool = False) -> None:
         log("   Run this script from inside the repository.")
         sys.exit(1)
 
-    _overlay_content()
-
-    # 1. Cleanly replace any existing old version
+    if not _native_provider_resolution_supported():
+        _overlay_content()
     if PLUGIN_DIR.exists():
         log("Existing plugin detected - updating to newest version...")
         shutil.rmtree(PLUGIN_DIR)
@@ -619,10 +650,12 @@ def do_check() -> int:
     if not PROVIDERS_FILE.is_file():
         log(f"{WARN}Hermes providers.py is missing (expected {PROVIDERS_FILE})")
         problems += 1
+    elif _native_provider_resolution_supported():
+        log(f"{OK}Hermes natively resolves the Bonzai provider profile (no overlay needed)")
     elif overlay_missing():
         log(f"{WARN}HermesOverlay entry is MISSING from providers.py.")
         log("   A `hermes update` most likely replaced the file.")
-        log("   Without it /model reports \"Unknown provider 'bonzai'\".")
+        log('   Without it /model reports "Unknown provider \'bonzai\'".')
         problems += 1
     else:
         log(f"{OK}HermesOverlay entry present in providers.py")
