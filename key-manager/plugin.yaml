@@ -1,9 +1,9 @@
 name: bonzai-key-manager
 kind: backend
-version: 1.0.0
+version: 2.0.0
 python_dependencies:
   - filelock>=3.0
-description: Securely manage Bonzai credential rotation
+description: Manage per-chat Bonzai client keys without pool rotation
 manifest_version: 2
 api_version: 1
 license: MIT

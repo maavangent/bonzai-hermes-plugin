@@ -1,8 +1,8 @@
 {
   "name": "bonzai-key-manager",
   "label": "Bonzai Key Manager",
-  "description": "Manage Bonzai credentials and rotation strategy",
+  "description": "Manage per-chat Bonzai client keys",
   "icon": "KeyRound",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "api": "plugin_api.py"
 }
