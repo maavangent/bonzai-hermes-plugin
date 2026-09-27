@@ -17,12 +17,14 @@ import {
   useQueryClient,
   useValue,
 } from "@hermes/plugin-sdk";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
 
 const PLUGIN_ID = "bonzai-key-manager";
 const QUERY_KEY = [PLUGIN_ID, "credentials"];
 const SESSIONS_QUERY_KEY = [PLUGIN_ID, "sessions"];
+const DEFAULT_SLUG = "io";
+const DEFAULT_LABEL = "iO (Default)";
 
 const styles = {
   pane: {
@@ -62,6 +64,10 @@ const styles = {
     gap: 6,
     color: "var(--foreground)",
   },
+  hint: {
+    fontSize: 11,
+    color: "var(--ui-text-tertiary, var(--muted-foreground))",
+  },
   list: {
     display: "flex",
     flexDirection: "column",
@@ -74,7 +80,6 @@ const styles = {
     padding: "8px 10px",
     borderRadius: 8,
     border: "1px solid transparent",
-    cursor: "pointer",
     transition: "background-color 0.12s ease, border-color 0.12s ease",
   },
   rowActive: {
@@ -103,6 +108,9 @@ const styles = {
     fontSize: 11,
     color: "var(--ui-text-tertiary, var(--muted-foreground))",
     fontFamily: "var(--font-mono, monospace)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   },
   addBox: {
     padding: 10,
@@ -139,36 +147,13 @@ function unwrap(value) {
 }
 
 function credentialsFrom(value) {
-  const data = unwrap(value);
-  const list = Array.isArray(data)
-    ? data
-    : (data?.credentials ?? data?.items ?? data?.entries ?? []);
-  return Array.isArray(list) ? list : [];
+  const list = unwrap(value)?.credentials;
+  return Array.isArray(list) ? list.filter((entry) => entry && typeof entry.slug === "string") : [];
 }
 
-function credentialId(entry, index) {
-  return String(entry.id ?? entry.credential_id ?? entry.key_id ?? index);
-}
-
-function credentialLabel(entry, index) {
-  const raw = String(entry.label ?? entry.name ?? entry.display_name ?? `Key ${index + 1}`);
-  if (raw === "BONZAI_API_KEY") return "iO (Default)";
-  return raw;
-}
-
-function credentialSlug(entry) {
-  const raw = String(entry.label ?? entry.name ?? entry.display_name ?? "");
-  if (raw === "BONZAI_API_KEY" || raw.toLowerCase() === "io" || raw.toLowerCase() === "default") {
-    return "io";
-  }
-  return raw.toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9-]/g, "");
-}
-
-function isManual(entry) {
-  const source = String(entry.source ?? "").toLowerCase();
-  if (entry.manual === true) return true;
-  if (entry.removable === false) return false;
-  return !source.includes("env") && !source.includes("environment");
+function sessionMapFrom(value) {
+  const sessions = unwrap(value)?.sessions;
+  return sessions && typeof sessions === "object" ? sessions : {};
 }
 
 async function request(ctx, path, options) {
@@ -179,99 +164,75 @@ async function request(ctx, path, options) {
   }
 }
 
-export function BonzaiStatusLabel({ ctx }) {
+function useKeyState(ctx) {
   const focusedSessionId = useValue(host.state.focusedSessionId);
   const profile = useValue(host.state.profile);
-
-  const credentialsQuery = useQuery({
+  const credentials = useQuery({
     queryKey: [...QUERY_KEY, profile],
     queryFn: () => request(ctx, "/credentials"),
   });
-  const sessionsQuery = useQuery({
+  const sessions = useQuery({
     queryKey: [...SESSIONS_QUERY_KEY, profile],
     queryFn: () => request(ctx, "/sessions"),
     refetchInterval: 5000,
   });
+  const entries = useMemo(() => credentialsFrom(credentials.data), [credentials.data]);
+  const activeSlug = (focusedSessionId && sessionMapFrom(sessions.data)[focusedSessionId]) || DEFAULT_SLUG;
+  const activeEntry = entries.find((entry) => entry.slug === activeSlug);
+  // A binding whose key was removed elsewhere must not look healthy.
+  const missing = activeSlug !== DEFAULT_SLUG && credentials.isSuccess && !activeEntry;
+  const activeLabel = activeEntry?.label ?? (activeSlug === DEFAULT_SLUG ? DEFAULT_LABEL : activeSlug);
+  return { focusedSessionId, profile, credentials, entries, activeSlug, activeLabel, missing };
+}
 
-  const entries = useMemo(
-    () => credentialsFrom(credentialsQuery.data),
-    [credentialsQuery.data],
-  );
-
-  const sessionsData = unwrap(sessionsQuery.data);
-  const sessionMap = (sessionsData && typeof sessionsData === "object" && sessionsData.sessions) || {};
-  const activeSlug = (focusedSessionId && sessionMap[focusedSessionId]) || "io";
-
-  let activeLabel = "iO (Default)";
-  if (activeSlug !== "io") {
-    const found = entries.find((e) => credentialSlug(e) === activeSlug);
-    if (found) {
-      activeLabel = credentialLabel(found, 0);
-    } else {
-      activeLabel = activeSlug;
-    }
-  }
-
+export function BonzaiStatusLabel({ ctx }) {
+  const { activeLabel, missing } = useKeyState(ctx);
   return jsxs("span", {
     style: { display: "inline-flex", alignItems: "center", gap: 5 },
     children: [
-      jsx(StatusDot, { tone: "good" }),
+      jsx(StatusDot, { tone: missing ? "warn" : "good" }),
       `Bonzai · ${activeLabel}`,
     ],
   });
 }
 
-function KeyRow({ ctx, entry, index, activeSlug, busy, onSelect, onRemoved }) {
-  const id = credentialId(entry, index);
-  const label = credentialLabel(entry, index);
-  const slug = credentialSlug(entry);
-  const active = slug === activeSlug;
-  const manual = isManual(entry);
+function KeyRow({ ctx, entry, active, busy, onSelect, onRemoved }) {
   const [hover, setHover] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const selectable = !active && !busy && entry.configured;
+  const detail = [entry.masked ?? "No key stored", entry.model].filter(Boolean).join(" · ");
 
-  const masked = entry.masked || (manual ? "Manual client key" : "Default environment key");
-
-  const remove = async (e) => {
-    e?.stopPropagation?.();
+  const remove = async () => {
     if (active) {
       setConfirmRemove(false);
-      host.notify({
-        kind: "warning",
-        message: `Select another key in this chat before removing “${label}”.`,
-      });
+      host.notify({ kind: "warning", message: `Select another key in this chat before removing “${entry.label}”.` });
       return;
     }
     try {
-      await request(ctx, `/credentials/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await request(ctx, `/credentials/${encodeURIComponent(entry.slug)}`, { method: "DELETE" });
       setConfirmRemove(false);
       onRemoved();
-      host.notify({ kind: "success", message: `Removed “${label}”` });
+      host.notify({ kind: "success", message: `Removed “${entry.label}”` });
     } catch (err) {
       host.notify({ kind: "error", message: `Could not remove key: ${messageOf(err)}` });
     }
   };
 
-  const rowStyle = {
-    ...styles.row,
-    ...(active ? styles.rowActive : (hover ? styles.rowHover : {})),
-  };
-
   return jsxs("div", {
-    style: rowStyle,
+    style: { ...styles.row, ...(active ? styles.rowActive : hover && selectable ? styles.rowHover : {}) },
     onMouseEnter: () => setHover(true),
     onMouseLeave: () => setHover(false),
     children: [
       jsxs("div", {
-        style: { display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, cursor: active ? "default" : "pointer" },
-        onClick: () => !active && onSelect(entry, index),
+        style: { display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, cursor: selectable ? "pointer" : "default" },
+        onClick: () => selectable && onSelect(entry),
         children: [
-          jsx(StatusDot, { tone: active ? "good" : "muted" }),
+          jsx(StatusDot, { tone: active ? "good" : entry.configured ? "muted" : "warn" }),
           jsxs("div", {
             style: styles.keyInfo,
             children: [
-              jsx("span", { style: styles.keyName, children: label }),
-              jsx("span", { style: styles.keySub, children: masked }),
+              jsx("span", { style: styles.keyName, children: entry.label }),
+              jsx("span", { style: styles.keySub, children: detail }),
             ],
           }),
         ],
@@ -286,22 +247,17 @@ function KeyRow({ ctx, entry, index, activeSlug, busy, onSelect, onRemoved }) {
             : jsx(Button, {
                 size: "xs",
                 variant: "ghost",
-                disabled: busy,
-                onClick: (e) => {
-                  e.stopPropagation();
-                  onSelect(entry, index);
-                },
+                disabled: !selectable,
+                onClick: () => onSelect(entry),
                 children: "Use",
               }),
-          manual && !active
+          entry.removable && !active
             ? jsx(Button, {
                 size: "xs",
                 variant: "ghost",
                 disabled: busy,
-                onClick: (e) => {
-                  e.stopPropagation();
-                  setConfirmRemove(true);
-                },
+                "aria-label": `Remove ${entry.label}`,
+                onClick: () => setConfirmRemove(true),
                 children: "✕",
               })
             : null,
@@ -309,7 +265,7 @@ function KeyRow({ ctx, entry, index, activeSlug, busy, onSelect, onRemoved }) {
       }),
       jsx(ConfirmDialog, {
         confirmLabel: "Remove",
-        description: `Remove “${label}” from Bonzai keys? This will remove the client alias.`,
+        description: `Remove “${entry.label}”? Its key is deleted from this Hermes profile and chats using it fall back to iO.`,
         destructive: true,
         onClose: () => setConfirmRemove(false),
         onConfirm: remove,
@@ -322,83 +278,49 @@ function KeyRow({ ctx, entry, index, activeSlug, busy, onSelect, onRemoved }) {
 
 function Manager({ ctx }) {
   const queryClient = useQueryClient();
-  const nameInputRef = useRef(null);
-  const profile = useValue(host.state.profile);
-  const focusedSessionId = useValue(host.state.focusedSessionId);
-
+  const { focusedSessionId, profile, credentials, entries, activeSlug, activeLabel, missing } = useKeyState(ctx);
   const [adding, setAdding] = useState(false);
   const [newLabel, setNewLabel] = useState("");
   const [newKey, setNewKey] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const credentials = useQuery({
-    queryKey: [...QUERY_KEY, profile],
-    queryFn: () => request(ctx, "/credentials"),
-  });
-  const sessionsQuery = useQuery({
-    queryKey: [...SESSIONS_QUERY_KEY, profile],
-    queryFn: () => request(ctx, "/sessions"),
-    refetchInterval: 5000,
-  });
-
-  const entries = useMemo(
-    () => credentialsFrom(credentials.data),
-    [credentials.data],
-  );
-
-  const sessionsData = unwrap(sessionsQuery.data);
-  const sessionMap = (sessionsData && typeof sessionsData === "object" && sessionsData.sessions) || {};
-  const activeSlug = (focusedSessionId && sessionMap[focusedSessionId]) || "io";
-
-  let activeLabel = "iO (Default)";
-  if (activeSlug !== "io") {
-    const found = entries.find((e) => credentialSlug(e) === activeSlug);
-    if (found) {
-      activeLabel = credentialLabel(found, 0);
-    } else {
-      activeLabel = activeSlug;
-    }
-  }
-
-  const refresh = async () => {
-    await Promise.all([
+  const refresh = () =>
+    Promise.all([
       queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
       queryClient.invalidateQueries({ queryKey: SESSIONS_QUERY_KEY }),
     ]);
-  };
 
-  const switchKey = async (entry, index) => {
-    if (!focusedSessionId) {
-      host.notify({ kind: "warning", message: "No active chat session selected." });
+  const switchKey = async (entry) => {
+    const sessionId = focusedSessionId;
+    if (!sessionId) {
+      host.notify({ kind: "warning", message: "Open a chat first, then pick a key for it." });
       return;
     }
     setBusy(true);
-    const id = credentialId(entry, index);
-    const slug = credentialSlug(entry);
-    const display = credentialLabel(entry, index);
-
-    // Optimistically update session keys query cache
-    queryClient.setQueryData([...SESSIONS_QUERY_KEY, profile], (old) => {
-      const current = (old && typeof old === "object" && old.sessions) ? old.sessions : {};
-      return { sessions: { ...current, [focusedSessionId]: slug } };
-    });
-
     try {
-      await request(ctx, `/sessions/${encodeURIComponent(focusedSessionId)}`, {
+      // The same RPC Desktop's model picker uses: it reports a failed switch
+      // as an error and defers a switch made while a reply is streaming.
+      const result = unwrap(await host.request("config.set", {
+        session_id: sessionId,
+        key: "model",
+        value: `${entry.slug} --session`,
+      }));
+      if (result?.confirm_required) {
+        host.notify({ kind: "warning", message: result.confirm_message || result.warning || "Confirm this model in the chat first." });
+        return;
+      }
+      // Record the binding only after Hermes accepted the switch, so the
+      // status bar never claims a key this chat is not using.
+      await request(ctx, `/sessions/${encodeURIComponent(sessionId)}`, {
         method: "POST",
-        body: { slug },
+        body: { slug: entry.slug },
       });
-    } catch {
-      // Background save failed; continue with slash command
-    }
-
-    try {
-      await host.request("slash.exec", {
-        command: `/model ${slug}`,
-        session_id: focusedSessionId,
+      host.notify({
+        kind: "success",
+        message: result?.deferred
+          ? `${entry.label} takes over after the current reply`
+          : `This chat now uses ${entry.label}`,
       });
-
-      host.notify({ kind: "success", message: `Switched this chat to ${display}` });
     } catch (err) {
       host.notify({ kind: "error", message: `Could not switch key: ${messageOf(err)}` });
     } finally {
@@ -409,33 +331,29 @@ function Manager({ ctx }) {
 
   const addAndUse = async (e) => {
     e.preventDefault();
-    const cleanLabel = newLabel.trim();
-    const cleanKey = newKey.trim();
-    if (!cleanLabel || !cleanKey) return;
-
+    const label = newLabel.trim();
+    const apiKey = newKey.trim();
+    if (!label || !apiKey) return;
     setBusy(true);
+    let created = null;
     try {
-      const res = await request(ctx, "/credentials", {
+      created = unwrap(await request(ctx, "/credentials", {
         method: "POST",
-        body: { label: cleanLabel, api_key: cleanKey },
-      });
-      const data = unwrap(res);
-      const created = data?.credential;
-
-      await refresh();
+        body: { label, api_key: apiKey },
+      }))?.credential;
       setNewLabel("");
       setNewKey("");
       setAdding(false);
-
-      if (created) {
-        await switchKey(created, 0);
-      } else {
-        host.notify({ kind: "success", message: `Added client key “${cleanLabel}”` });
-      }
+      await refresh();
     } catch (err) {
       host.notify({ kind: "error", message: `Could not add key: ${messageOf(err)}` });
     } finally {
       setBusy(false);
+    }
+    if (created && focusedSessionId) {
+      await switchKey(created);
+    } else if (created) {
+      host.notify({ kind: "success", message: `Added client key “${created.label}”` });
     }
   };
 
@@ -447,22 +365,20 @@ function Manager({ ctx }) {
       children: jsxs("div", {
         style: styles.body,
         children: [
-          // Active chat status banner
           jsxs("div", {
             style: styles.headerBox,
             children: [
               jsx("span", { style: styles.headerTitle, children: "Active In This Chat" }),
               jsxs("div", {
                 style: styles.headerStatus,
-                children: [
-                  jsx(StatusDot, { tone: "good" }),
-                  activeLabel,
-                ],
+                children: [jsx(StatusDot, { tone: missing ? "warn" : "good" }), activeLabel],
               }),
+              missing
+                ? jsx("span", { style: styles.hint, children: "This key was removed. Pick another key for this chat." })
+                : null,
             ],
           }),
 
-          // Keys list
           jsxs("div", {
             style: { display: "flex", flexDirection: "column", gap: 6 },
             children: [
@@ -477,25 +393,20 @@ function Manager({ ctx }) {
                     children: jsx(Button, { size: "xs", onClick: refresh, children: "Retry" }),
                   })
                 : null,
-              !credentials.isLoading && !credentials.isError && entries.length === 0
+              credentials.isSuccess && entries.length === 0
                 ? jsx(EmptyState, { title: "No keys found", description: "Add a Bonzai client key below." })
                 : null,
-              jsxs("div", {
+              jsx("div", {
                 style: styles.list,
-                children: entries.map((entry, index) =>
-                  jsx(
-                    KeyRow,
-                    {
-                      ctx,
-                      entry,
-                      index,
-                      activeSlug,
-                      busy,
-                      onSelect: switchKey,
-                      onRemoved: refresh,
-                    },
-                    credentialId(entry, index),
-                  ),
+                children: entries.map((entry) =>
+                  jsx(KeyRow, {
+                    ctx,
+                    entry,
+                    active: entry.slug === activeSlug,
+                    busy,
+                    onSelect: switchKey,
+                    onRemoved: refresh,
+                  }, entry.slug),
                 ),
               }),
             ],
@@ -503,7 +414,6 @@ function Manager({ ctx }) {
 
           jsx(Separator, {}),
 
-          // Add client key form or trigger button
           adding
             ? jsxs("form", {
                 onSubmit: addAndUse,
@@ -515,14 +425,15 @@ function Manager({ ctx }) {
                     placeholder: "Client name (e.g. Landal, Heineken)",
                     value: newLabel,
                     onChange: (e) => setNewLabel(e.target.value),
-                    ref: nameInputRef,
                   }),
                   jsx(Input, {
                     placeholder: "Bonzai API Key",
                     type: "password",
+                    autoComplete: "off",
                     value: newKey,
                     onChange: (e) => setNewKey(e.target.value),
                   }),
+                  jsx("span", { style: styles.hint, children: "Stored only in this profile's .env. Never used for iO work." }),
                   jsxs("div", {
                     style: { display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4 },
                     children: [
@@ -541,7 +452,7 @@ function Manager({ ctx }) {
                         size: "xs",
                         type: "submit",
                         disabled: busy || !newLabel.trim() || !newKey.trim(),
-                        children: busy ? "Saving…" : "Save & Use",
+                        children: busy ? "Saving…" : focusedSessionId ? "Save & Use" : "Save",
                       }),
                     ],
                   }),
