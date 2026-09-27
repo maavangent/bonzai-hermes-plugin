@@ -1,6 +1,6 @@
 name: bonzai-provider
 kind: model-provider
-version: 2.7.0
+version: 2.8.0
 description: Bonzai API provider for iO
 author: Maarten van Gent
 manifest_version: 2

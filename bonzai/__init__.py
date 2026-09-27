@@ -24,11 +24,43 @@ except Exception:  # pragma: no cover - defensive
     _HERMES_VERSION = "unknown"
 
 _USER_AGENT = f"HermesAgent/{_HERMES_VERSION}"
+_API_KEY_ENV_VAR = "BONZAI_API_KEY"
+
+
+def _scoped_env(name: str) -> str:
+    """Read a secret through Hermes' per-profile scope when it exists.
+
+    ``os.getenv`` would hand one profile another profile's key on a
+    multiplexed backend; ``get_secret`` fails closed there instead.
+    """
+    try:
+        from agent.secret_scope import get_secret
+        return (get_secret(name, "") or "").strip()
+    except Exception:
+        return (os.getenv(name) or "").strip()
 
 logger = logging.getLogger(__name__)
 
-_CACHE: dict = {"models": None, "ts": 0}
+_CACHE: dict = {}  # key -> {"models": [...], "ts": float}; see _cache_key
 _CACHE_TTL = 60
+
+
+def _cache_key(api_key: str) -> str:
+    """Scope the in-process cache to one credential and profile.
+
+    One Hermes process can serve several profiles. A module-global list would
+    hand profile B the catalog fetched with profile A's key. The digest keeps
+    the raw key out of process memory dumps of this dict.
+    """
+    import hashlib
+
+    home = os.environ.get("HERMES_HOME", "")
+    try:
+        from hermes_constants import get_hermes_home
+        home = str(get_hermes_home())
+    except Exception:
+        pass
+    return hashlib.sha256(f"{home}\0{api_key}".encode()).hexdigest()
 
 # Disk cache filename. The in-process _CACHE dies with the process, so a
 # freshly started Hermes with no network would otherwise fall back to a
@@ -37,11 +69,15 @@ _OFFLINE_CACHE_NAME = "bonzai_models_cache.json"
 
 
 def _offline_cache_path():
-    """Path of the last-known-good model list, honouring HERMES_HOME."""
+    """Path of the last-known-good model list for the active profile."""
     from pathlib import Path
 
-    home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
-    return Path(home) / _OFFLINE_CACHE_NAME
+    try:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home()) / _OFFLINE_CACHE_NAME
+    except Exception:
+        home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+        return Path(home) / _OFFLINE_CACHE_NAME
 
 
 def _store_offline_models(models: list) -> None:
@@ -378,17 +414,21 @@ class BonzaiProfile(ProviderProfile):
         """
         now = time.time()
 
-        if _CACHE["models"] and (now - _CACHE["ts"]) < _CACHE_TTL:
-            return _CACHE["models"]
-
         if not api_key:
-            api_key = os.getenv("BONZAI_API_KEY")
+            api_key = _scoped_env(_API_KEY_ENV_VAR)
 
         if not api_key:
             logger.warning("Bonzai: no API key available for model fetch")
             return None
 
-        url = "https://api-v2.bonzai.iodigital.com/v1/models"
+        cache_key = _cache_key(api_key)
+        cached_entry = _CACHE.get(cache_key)
+        if cached_entry and (now - cached_entry["ts"]) < _CACHE_TTL:
+            return list(cached_entry["models"])
+
+        # Fixed host on purpose: a caller-supplied base_url must never receive
+        # the Bonzai key.
+        url = self.base_url.rstrip("/") + "/v1/models"
 
         req = urllib.request.Request(url)
         req.add_header("Authorization", f"Bearer {api_key}")
@@ -418,11 +458,10 @@ class BonzaiProfile(ProviderProfile):
             if raw_models:
                 shortlist = _build_smart_shortlist(raw_models)
                 _update_model_capabilities(items)
-                _CACHE["models"] = shortlist
-                _CACHE["ts"] = now
+                _CACHE[cache_key] = {"models": shortlist, "ts": now}
                 _store_offline_models(shortlist)
                 logger.info("Bonzai: smart shortlist built with %d models", len(shortlist))
-                return shortlist
+                return list(shortlist)
 
         except Exception as exc:
             logger.warning("Bonzai live model fetch failed: %s", exc)
@@ -443,7 +482,7 @@ bonzai = BonzaiProfile(
     signup_url="https://bonzai.iodigital.com/",
     base_url="https://api-v2.bonzai.iodigital.com/",
     auth_type="api_key",
-    env_vars=("BONZAI_API_KEY",),
+    env_vars=(_API_KEY_ENV_VAR,),
     # Consistent attribution on ALL requests (chat + fetch). The base-class
     # client construction picks default_headers up automatically, so iO can
     # identify Hermes traffic in Bonzai logs.

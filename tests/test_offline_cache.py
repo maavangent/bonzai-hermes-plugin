@@ -34,9 +34,39 @@ def load_plugin():
 def plugin(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     module = load_plugin()
-    module._CACHE["models"] = None
-    module._CACHE["ts"] = 0
+    module._CACHE.clear()
     return module
+
+
+def test_in_process_cache_is_scoped_per_key(plugin):
+    """A catalog fetched with one key must not be served to another key."""
+    calls = []
+
+    class Response:
+        def __init__(self, model):
+            self.body = json.dumps({"data": [{"id": model, "mode": "chat"}]}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return self.body
+
+    def urlopen(request, **_kwargs):
+        key = request.get_header("Authorization")
+        calls.append(key)
+        return Response("claude-opus-5" if key.endswith("key-a") else "gpt-5.6")
+
+    plugin.urllib.request.urlopen = urlopen
+
+    assert plugin.bonzai.fetch_models(api_key="key-a") == ["claude-opus-5"]
+    assert plugin.bonzai.fetch_models(api_key="key-b") == ["gpt-5.6"]
+    assert plugin.bonzai.fetch_models(api_key="key-a") == ["claude-opus-5"]
+    assert len(calls) == 2
+    assert all("key-" not in key for key in plugin._CACHE)
 
 
 def test_profile_ships_no_fallback_models_so_the_live_order_wins(plugin):
