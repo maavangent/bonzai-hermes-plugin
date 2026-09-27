@@ -50,11 +50,17 @@ git clone https://github.com/maavangent/bonzai-hermes-plugin $env:TEMP\bonzai-pl
 The plugin automatically installs the **Bonzai Key Manager** desktop extension:
 
 1. **Status Bar (Bottom-Right):**  
-   Click the **🌿 Bonzai** chip in the bottom-right corner of Hermes Desktop to view active credentials, test connections, and check health.
+   Click the **Bonzai · …** chip in the bottom-right corner to see which key the focused chat uses, switch keys, or add a client key.
 2. **Right Sidebar Pane:**  
-   Open the **Bonzai Keys** panel on the right sidebar to add, test, rename, or remove API keys with a visual form.
+   Open the **Bonzai Keys** panel on the right sidebar for the same controls in a pane.
 3. **Command Palette (`⌘K` / `Ctrl+K`):**  
-   Type `Bonzai: Locate key manager` to immediately focus the key manager pane.
+   `Bonzai: Select client key` points you to the status-bar menu.
+
+Picking a key switches **only the focused chat**. A switch made while Hermes is replying takes effect after that reply. If Hermes rejects the switch, the chat keeps its current key and the menu shows the error.
+
+### How client keys are kept separate
+
+A client key is stored as its own `.env` secret plus a `model_aliases` entry, never in the Bonzai credential pool. Hermes rotates pool keys automatically after a rate limit or a rejected key, so a pooled client key could silently bill iO work to that client, or the reverse. Key Manager 2.0 moves client keys that older versions put in the pool into aliases the first time Hermes Desktop loads it; `python install.py --check` reports any that remain.
 
 ---
 
@@ -93,6 +99,7 @@ You can also configure client keys directly in your chat:
        provider: custom
        base_url: "https://api-v2.bonzai.iodigital.com"
        key_env: BONZAI_LANDAL_API_KEY
+       label: Landal          # optional, shown in the Key Manager
    ```
 3. Switch anytime in chat:
    ```text
@@ -138,10 +145,12 @@ Then restart Hermes Desktop, or run `hermes gateway restart`. The installer does
 1. Copies the provider into `~/.hermes/plugins/model-providers/bonzai/` (auto-discovered by Hermes).
 2. Copies and enables the backend at `~/.hermes/plugins/bonzai-key-manager/`.
 3. Copies the Desktop companion to `~/.hermes/desktop-plugins/bonzai-key-manager/plugin.js`.
-4. Injects the `HermesOverlay` entry into `hermes_cli/providers.py` so `/model` and the model picker recognise Bonzai.
+4. On current Hermes versions, removes the legacy `HermesOverlay` patch from Hermes-owned source if an older install left it. Only Hermes versions without native provider-plugin resolution still get the overlay.
 5. Sets `model.provider: bonzai` and `model.default: gemini-3.7-flash` in `config.yaml`.
 6. Sets up the default `io` model alias in `config.yaml`.
 7. Clears the model cache so newly added models appear immediately.
+
+Run it with Hermes' own Python (the launchers do this) so `config.yaml` edits keep your comments and formatting. Without PyYAML the installer copies the plugin files but refuses to touch `config.yaml`. Keys in `.env` are written atomically with owner-only permissions.
 
 It honors the `HERMES_HOME` environment variable and falls back to `~/.hermes`.
 
@@ -155,7 +164,7 @@ Run a diagnostic check at any time:
 python install.py --check
 ```
 
-Reports whether the provider directory, overlay, Key Manager backend, Desktop companion, and API key are properly configured.
+Reports whether the provider directory, native provider resolution (or the legacy overlay on old Hermes versions), Key Manager backend, Desktop companion, and API key are configured. It also fails when client keys are still in the Bonzai credential pool, or when the installed files differ from your checkout (a stale copy that Desktop would keep loading).
 
 ---
 
