@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -43,6 +44,7 @@ def load_installer(home: Path):
     spec.loader.exec_module(module)
     # install.py resolves paths at import time; retarget them at the temp home.
     module.HERMES_HOME = home
+    module.HERMES_ROOT = module.resolve_hermes_root(home)
     module.PLUGIN_DIR = home / "plugins" / "model-providers" / "bonzai"
     module.KEY_MANAGER_DIR = home / "plugins" / "bonzai-key-manager"
     module.DESKTOP_PLUGIN_FILE = home / "desktop-plugins" / "bonzai-key-manager" / "plugin.js"
@@ -250,7 +252,7 @@ def test_check_requires_backend_desktop_file_and_enabled_state(env):
         "name: bonzai-key-manager\nkind: backend\n"
     )
     installer.DESKTOP_PLUGIN_FILE.parent.mkdir(parents=True)
-    installer.DESKTOP_PLUGIN_FILE.write_text("installed")
+    installer.DESKTOP_PLUGIN_FILE.write_bytes(installer.SOURCE_DESKTOP_PLUGIN.read_bytes())
     (home / "config.yaml").write_text(yaml.safe_dump({
         "plugins": {"enabled": ["bonzai-key-manager"]}
     }))
@@ -407,4 +409,82 @@ def test_one_click_launchers_exist():
     win_launcher = INSTALLER.parent / "Install-Bonzai-Model-Provider.cmd"
     assert mac_launcher.is_file()
     assert win_launcher.is_file()
+
+
+def test_env_writes_are_owner_only_and_deduplicate(tmp_path):
+    installer = load_installer(tmp_path)
+    installer.ENV_FILE = tmp_path / ".env"
+    installer.ENV_FILE.write_text("# note\nexport BONZAI_API_KEY=old\nOTHER=1\nBONZAI_API_KEY=dup\n")
+    installer.ENV_FILE.chmod(0o644)
+
+    installer.set_env_var("BONZAI_API_KEY", "new-value\n")
+
+    assert installer.ENV_FILE.read_text() == "# note\nBONZAI_API_KEY=new-value\nOTHER=1\n"
+    assert installer.ENV_FILE.stat().st_mode & 0o077 == 0
+
+
+def test_client_alias_uses_the_key_manager_slug_and_rejects_reserved_names(tmp_path):
+    installer = load_installer(tmp_path)
+    installer.ENV_FILE = tmp_path / ".env"
+
+    assert installer.add_client_alias("Landal  NL", "client-value") == "landal-nl"
+    alias = installer._load_config()["model_aliases"]["landal-nl"]
+    assert alias["label"] == "Landal  NL"
+    assert alias["key_env"] == "BONZAI_LANDAL_NL_API_KEY"
+
+    for reserved in ("iO", "default", "Bonzai"):
+        with pytest.raises(ValueError, match="reserved"):
+            installer.add_client_alias(reserved, "client-value")
+    assert "io" not in installer._load_config()["model_aliases"]
+
+
+def test_config_edits_keep_user_comments_when_hermes_is_available(tmp_path):
+    installer = load_installer(tmp_path)
+    if installer._hermes_config_writer() is None:
+        pytest.skip("run with Hermes' own Python to exercise its config writer")
+    installer.CONFIG_FILE.write_text("# my notes\nmodel:\n  provider: openrouter  # keep\n")
+
+    installer.configure_bonzai_defaults()
+
+    text = installer.CONFIG_FILE.read_text()
+    assert "# my notes" in text
+    assert "# keep" in text
+    assert installer._load_config()["model"]["provider"] == "bonzai"
+
+
+def test_config_is_never_rewritten_without_a_yaml_parser(tmp_path, monkeypatch):
+    installer = load_installer(tmp_path)
+    original = "model:\n  provider: openrouter\n  nested:\n    deep: true\n"
+    installer.CONFIG_FILE.write_text(original)
+    monkeypatch.setattr(installer, "yaml", None)
+
+    with pytest.raises(RuntimeError, match="PyYAML is not available"):
+        installer.configure_bonzai_defaults()
+
+    assert installer.CONFIG_FILE.read_text() == original
+
+
+def test_check_flags_client_keys_left_in_the_credential_pool(env):
+    home, installer, _providers = env
+    installer.do_install()
+    assert installer.do_check() == 0
+
+    (home / "auth.json").write_text(json.dumps({"credential_pool": {"bonzai": [
+        {"id": "a", "source": "env:BONZAI_API_KEY"},
+        {"id": "b", "source": "manual", "label": "Landal"},
+    ]}}))
+
+    assert installer.pooled_client_keys() == 1
+    assert installer.do_check() == 1
+
+
+def test_check_flags_a_stale_installed_copy(env):
+    _home, installer, _providers = env
+    installer.do_install()
+    assert installer.stale_installed_files() == []
+
+    installer.DESKTOP_PLUGIN_FILE.write_text("// older build")
+
+    assert installer.stale_installed_files() == ["desktop-plugins/bonzai-key-manager/plugin.js"]
+    assert installer.do_check() == 1
 

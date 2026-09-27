@@ -105,32 +105,10 @@ except ImportError:
             os.execv(str(_hermes_py), [str(_hermes_py)] + sys.argv)
         except Exception:
             pass
-
-    class _FallbackYaml:
-        @staticmethod
-        def safe_load(text: str) -> dict:
-            import json
-            try:
-                return json.loads(text)
-            except Exception:
-                res: dict = {}
-                for line in text.splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#") and ":" in line:
-                        k, v = line.split(":", 1)
-                        res[k.strip()] = v.strip().strip("\"'")
-                return res
-
-        @staticmethod
-        def safe_dump(data: dict, handle, **_kwargs) -> None:
-            import json
-            try:
-                handle.write(json.dumps(data, indent=2))
-            except Exception:
-                for k, v in data.items():
-                    handle.write(f"{k}: {v}\n")
-
-    yaml = _FallbackYaml()  # type: ignore
+    # No PyYAML anywhere: file installation still works, but config.yaml is
+    # never parsed or rewritten. A hand-rolled parser would flatten nested
+    # sections and write the damage back.
+    yaml = None  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +246,17 @@ def clear_cache() -> None:
 # Configuration & .env Helpers
 # ---------------------------------------------------------------------------
 
+def _require_yaml() -> None:
+    if yaml is None:
+        raise RuntimeError(
+            "PyYAML is not available, so config.yaml was left untouched. "
+            "Run this installer with Hermes' Python "
+            "(~/.hermes/hermes-agent/venv/bin/python install.py)."
+        )
+
+
 def _load_config() -> dict:
+    _require_yaml()
     if not CONFIG_FILE.is_file():
         return {}
     config = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
@@ -277,12 +265,42 @@ def _load_config() -> dict:
     return config
 
 
+def _hermes_config_writer():
+    """Hermes' own comment-preserving config writer, or None when unavailable.
+
+    Only inside Hermes' own venv: importing a Hermes tree into a foreign
+    interpreter half-loads it (missing dependencies, other Python version).
+    The source tree is derived from the running venv, not from HERMES_HOME,
+    because a profile or scratch home need not sit next to the runtime. It
+    goes on sys.path because the editable install does not map every
+    top-level module (``hermes_yaml``).
+    """
+    source = Path(sys.prefix).resolve().parent
+    if not (source / "hermes_cli" / "config.py").is_file():
+        return None
+    if str(source) not in sys.path:
+        sys.path.insert(0, str(source))
+    try:
+        from hermes_cli.config import atomic_config_write
+    except Exception:
+        return None
+    return atomic_config_write
+
+
 def _save_config(config: dict) -> None:
+    _require_yaml()
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    writer = _hermes_config_writer()
+    if writer is not None:
+        # Keeps the user's comments, key order and quoting intact.
+        writer(CONFIG_FILE, config)
+        return
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=CONFIG_FILE.parent, delete=False
     ) as handle:
         yaml.safe_dump(config, handle, sort_keys=False)
+        handle.flush()
+        os.fsync(handle.fileno())
         temporary = Path(handle.name)
     temporary.replace(CONFIG_FILE)
 
@@ -341,17 +359,21 @@ def get_env_var(var_name: str) -> str | None:
 
 
 def set_env_var(var_name: str, value: str) -> None:
-    """Set or update a variable in ~/.hermes/.env safely."""
+    """Set or update a variable in ~/.hermes/.env atomically, owner-only."""
     ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
+    value = value.replace("\r", "").replace("\n", "")
     lines: list[str] = []
     found = False
     if ENV_FILE.is_file():
         for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
+            if stripped.startswith("export "):
+                stripped = stripped[len("export "):].lstrip()
             if not stripped.startswith("#") and "=" in stripped:
                 k, _ = stripped.split("=", 1)
                 if k.strip() == var_name:
-                    lines.append(f"{var_name}={value}")
+                    if not found:
+                        lines.append(f"{var_name}={value}")
                     found = True
                     continue
             lines.append(line)
@@ -359,7 +381,17 @@ def set_env_var(var_name: str, value: str) -> None:
     if not found:
         lines.append(f"{var_name}={value}")
 
-    ENV_FILE.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    fd, temporary = tempfile.mkstemp(prefix=".env_", suffix=".tmp", dir=ENV_FILE.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines).strip() + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, ENV_FILE)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 def configure_bonzai_defaults(api_key: str | None = None) -> None:
@@ -391,12 +423,27 @@ def configure_bonzai_defaults(api_key: str | None = None) -> None:
     log(f"{OK}Bonzai configured as default provider with 'gemini-3.7-flash' in {CONFIG_FILE}")
 
 
+RESERVED_ALIASES = frozenset({"io", "default", "bonzai", "bonzai-api-key"})
+
+
+def slugify(name: str) -> str:
+    """Alias name for a client label; must match the Key Manager backend."""
+    slug = re.sub(r"[\s_]+", "-", name.strip().lower())
+    slug = re.sub(r"[^a-z0-9-]", "", slug)
+    return re.sub(r"-{2,}", "-", slug).strip("-")
+
+
 def add_client_alias(name: str, api_key: str, model: str = "gemini-3.7-flash") -> str:
-    """Add a client-specific API key and alias, converting spaces to hyphens."""
-    clean_name = re.sub(r"[\s_]+", "-", name.strip().lower())
-    clean_name = re.sub(r"[^a-z0-9-]", "", clean_name).strip("-")
+    """Add a client-specific API key and alias, converting spaces to hyphens.
+
+    Client keys are aliases, never credential-pool rows, so Hermes can never
+    rotate iO work onto a client key after a rate limit.
+    """
+    clean_name = slugify(name)
     if not clean_name:
         raise ValueError("Invalid alias name. Please use letters, numbers, and hyphens only.")
+    if clean_name in RESERVED_ALIASES:
+        raise ValueError(f"'{clean_name}' is reserved for the default iO key. Choose a client name.")
 
     env_var = f"BONZAI_{clean_name.upper().replace('-', '_')}_API_KEY"
     set_env_var(env_var, api_key.strip())
@@ -413,6 +460,7 @@ def add_client_alias(name: str, api_key: str, model: str = "gemini-3.7-flash") -
         "provider": "custom",
         "base_url": "https://api-v2.bonzai.iodigital.com",
         "key_env": env_var,
+        "label": name.strip(),
     }
     _save_config(config)
     log(f"{OK}Client alias '{clean_name}' added to {CONFIG_FILE}")
@@ -441,8 +489,12 @@ def prompt_api_key_if_needed() -> str | None:
                 client_name = input("Client / project name (e.g. landal, heineken): ").strip()
                 if client_name:
                     model = input("Preferred model for this client [gemini-3.7-flash]: ").strip() or "gemini-3.7-flash"
-                    add_client_alias(client_name, existing_key, model)
-                    log(f"{OK}Assigned existing key to alias '{client_name.lower()}'.")
+                    try:
+                        slug = add_client_alias(client_name, existing_key, model)
+                        log(f"{OK}Assigned existing key to alias '{slug}'.")
+                    except ValueError as exc:
+                        log(f"{WARN}{exc}")
+                        return None
                 
                 log("")
                 log("Now, enter your new default iO API key (or press Enter to skip):")
@@ -489,9 +541,11 @@ def interactive_add_alias() -> None:
             log(f"{WARN}No key provided. Operation cancelled.")
             return
         model = input("Preferred model [gemini-3.7-flash]: ").strip() or "gemini-3.7-flash"
-        add_client_alias(name, key, model)
+        slug = add_client_alias(name, key, model)
         log("")
-        log(f"{OK}Success! In Hermes chat, switch anytime with: /model {name.lower()}")
+        log(f"{OK}Success! In Hermes chat, switch anytime with: /model {slug}")
+    except ValueError as exc:
+        log(f"{WARN}{exc}")
     except (EOFError, KeyboardInterrupt):
         log("\nCancelled.")
 
@@ -623,6 +677,36 @@ def do_update() -> None:
     do_install()
 
 
+def pooled_client_keys() -> int:
+    """Count manual Bonzai credential-pool rows (legacy Key Manager keys)."""
+    auth_file = HERMES_HOME / "auth.json"
+    if not auth_file.is_file():
+        return 0
+    try:
+        import json
+        rows = json.loads(auth_file.read_text(encoding="utf-8")).get("credential_pool", {}).get("bonzai", [])
+    except Exception:
+        return 0
+    return sum(
+        1 for row in rows
+        if isinstance(row, dict) and str(row.get("source", "")).strip().lower().startswith("manual")
+    )
+
+
+def stale_installed_files() -> list[str]:
+    """Installed copies that no longer match this checkout."""
+    pairs = [
+        (SOURCE_PLUGIN / "__init__.py", PLUGIN_DIR / "__init__.py"),
+        (SOURCE_KEY_MANAGER / "dashboard" / "plugin_api.py", KEY_MANAGER_DIR / "dashboard" / "plugin_api.py"),
+        (SOURCE_DESKTOP_PLUGIN, DESKTOP_PLUGIN_FILE),
+    ]
+    return [
+        str(installed.relative_to(HERMES_HOME))
+        for source, installed in pairs
+        if source.is_file() and installed.is_file() and source.read_bytes() != installed.read_bytes()
+    ]
+
+
 def do_check() -> int:
     """Diagnose the installation. Returns a process exit code."""
     problems = 0
@@ -681,6 +765,20 @@ def do_check() -> int:
         log(f"{OK}BONZAI_API_KEY is configured in {ENV_FILE}")
     else:
         log(f"{WARN}BONZAI_API_KEY is missing from {ENV_FILE}")
+
+    pooled = pooled_client_keys()
+    if pooled:
+        log(f"{WARN}{pooled} client key(s) are still in the Bonzai credential pool.")
+        log("   Hermes can rotate iO work onto them after a rate limit.")
+        log("   Start Hermes Desktop once: the Bonzai Key Manager migrates them automatically.")
+        problems += 1
+    else:
+        log(f"{OK}No client keys in the Bonzai credential pool")
+
+    stale = stale_installed_files()
+    if stale:
+        log(f"{WARN}Installed files differ from this checkout: {', '.join(stale)}")
+        problems += 1
 
     if problems:
         log("")

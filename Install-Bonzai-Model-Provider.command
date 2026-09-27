@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 cd "$(dirname "$0")"
 
-# Search for Hermes Python runtime first, then system python3/python
-HERMES_PY="$HOME/.hermes/hermes-agent/venv/bin/python3"
-if [ ! -f "$HERMES_PY" ]; then
-    HERMES_PY="$HOME/.hermes/hermes-agent/venv/bin/python"
-fi
-if [ ! -f "$HERMES_PY" ]; then
-    HERMES_PY="$HOME/venv/bin/python3"
-fi
-if [ ! -f "$HERMES_PY" ]; then
-    HERMES_PY="$(which python3 2>/dev/null || which python 2>/dev/null)"
+# Prefer Hermes' own Python: it has PyYAML and preserves config.yaml comments.
+HERMES_PY=""
+for candidate in \
+    "$HOME/.hermes/hermes-agent/venv/bin/python3" \
+    "$HOME/.hermes/hermes-agent/venv/bin/python" \
+    "$HOME/.local/share/hermes-agent/venv/bin/python3"; do
+    if [ -x "$candidate" ]; then
+        HERMES_PY="$candidate"
+        break
+    fi
+done
+if [ -z "$HERMES_PY" ]; then
+    HERMES_PY="$(command -v python3 || command -v python || true)"
 fi
 
 if [ -z "$HERMES_PY" ]; then
