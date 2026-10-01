@@ -479,7 +479,31 @@ class BonzaiProfile(ProviderProfile):
         return None
 
 
-bonzai = BonzaiProfile(
+def _profile_supports_field(field_name: str) -> bool:
+    """Return True when ProviderProfile's dataclass definition includes ``field_name``.
+
+    Hermes added ``classify_api_error`` (and similar optional kwargs) gradually.
+    On builds older than ~0.21 the field is absent from the dataclass, and passing
+    it as a keyword argument raises TypeError at import time — breaking the whole
+    plugin load. Checking the dataclass fields first lets the plugin degrade
+    gracefully: the capability is skipped on old builds instead of crashing.
+    """
+    import dataclasses
+    try:
+        return any(f.name == field_name for f in dataclasses.fields(ProviderProfile))
+    except TypeError:
+        # ProviderProfile is not a dataclass (e.g. a test stub). Fall back to
+        # checking class annotations, then hasattr on a dummy instance.
+        annotations = getattr(ProviderProfile, "__annotations__", {})
+        if field_name in annotations:
+            return True
+        try:
+            return hasattr(ProviderProfile(name="_probe"), field_name)
+        except Exception:
+            return False
+
+
+_PROFILE_KWARGS: dict = dict(
     name="bonzai",
     aliases=("bonzai-api", "io-bonzai", "iodigital"),
     display_name="Bonzai",
@@ -506,10 +530,24 @@ bonzai = BonzaiProfile(
     # capability; per-model context/output limits still come from the catalog.
     supports_vision=True,
     supports_vision_tool_messages=True,
-    classify_api_error=_classify_bonzai_error,
     model_capabilities={
         "gemini-3.7-flash": {"context_window": 1_048_576},
     },
+)
+
+# classify_api_error was added to ProviderProfile in Hermes ~0.21. Guard the kwarg
+# so the plugin loads cleanly on older builds (without error classification) instead
+# of crashing at import time with "unexpected keyword argument 'classify_api_error'".
+if _profile_supports_field("classify_api_error"):
+    _PROFILE_KWARGS["classify_api_error"] = _classify_bonzai_error
+else:
+    logger.warning(
+        "Bonzai: classify_api_error is not supported by this Hermes build. "
+        "Run 'hermes update' to enable Bonzai-specific error classification."
+    )
+
+bonzai = BonzaiProfile(
+    **_PROFILE_KWARGS,
     # Deliberately EMPTY. Hermes merges fallback_models AHEAD of the live list
     # (hermes_cli/models.py::provider_model_ids), so any hand-written tuple here
     # pins a stale order to the top of the picker and buries newly released

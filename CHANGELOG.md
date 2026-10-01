@@ -28,6 +28,7 @@
 - **gpt-6 family recognised in the model shortlist.** `gpt-6`, `gpt-6.N`, and named variants (`gpt-6-luna`, `gpt-6-sol`) are now treated as flagship chat models and promoted to tier-1 in the model picker. Lightweight variants (`gpt-6-mini`) remain in tier-2.
 - **Hermes version check in `--check`.**  Running `python install.py --check` now reports whether the installed Hermes version supports `classify_api_error` (requires Hermes >= 0.21.0). Older builds load-fail with `ProviderProfile.__init__() got an unexpected keyword argument 'classify_api_error'`; the check flags this before it becomes a silent failure for a colleague.
 - **`default_aux_model` documented.** Inline comment added noting that `claude-haiku-4-5` should be re-probed after each Haiku release.
+- **Backward-compatible `classify_api_error`.** The plugin now detects at load time whether the installed Hermes build supports the `classify_api_error` dataclass field. On older builds (< 0.21.0) the field is omitted and the plugin loads cleanly instead of crashing with `unexpected keyword argument 'classify_api_error'`.
 
 ### Documentation
 
