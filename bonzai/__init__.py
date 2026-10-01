@@ -129,7 +129,7 @@ _NON_CHAT = re.compile(
 # Display order of families in tier 1 (newest of each shown up top).
 _FAMILY_ORDER = [
     "claude-opus", "claude-sonnet", "claude-haiku",
-    "gpt-5", "gpt-4", "o-series",
+    "gpt-6", "gpt-5", "gpt-4", "o-series",
     "gemini-pro", "gemini-flash",
     "glm", "mistral-codestral", "mistral-devstral",
 ]
@@ -188,6 +188,12 @@ def _tier1_family(m: str):
     key, ver = _claude_identity(m)
     if key:
         return "-".join(key.split("-")[:2]), ver  # claude-opus / -sonnet / -haiku
+    if re.match(r"^gpt-6(?:\.\d+)?$", m):
+        return "gpt-6", (float(m.split("-")[1]),)
+    # Named GPT-6 variants (gpt-6-luna, gpt-6.1-luna). Lightweight tiers excluded.
+    g = re.match(r"^gpt-(6(?:\.\d+)?)-([a-z][a-z0-9-]*)$", m)
+    if g and not _LIGHTWEIGHT_SUFFIX.search(m):
+        return "gpt-6", (float(g.group(1)),)
     if re.match(r"^gpt-5(?:\.\d+)?$", m):
         return "gpt-5", (float(m.split("-")[1]),)
     # Named GPT variants belong to their numeric generation. All variants of
@@ -489,7 +495,7 @@ bonzai = BonzaiProfile(
     default_headers={"User-Agent": _USER_AGENT},
     # Cheap/fast model for auxiliary tasks (vision, compression,
     # session-search) so they don't silently fall back to the "auto" backend.
-    default_aux_model="claude-haiku-4-5",
+    default_aux_model="claude-haiku-4-5",  # Re-probe after each Claude Haiku release
     # Output-token ceiling per response. Set to 32k — a safe middle ground that
     # is within every Bonzai model's output limit while giving the agent room
     # for large writes (full files, plans, long refactors). The old 8192 cut

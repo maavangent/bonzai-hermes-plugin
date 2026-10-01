@@ -23,6 +23,12 @@
 - Provider-specific Bonzai/Vertex gateway 500s are classified separately from local authentication failures, with secret-free recovery context.
 - The Key Manager dashboard avoids Hermes' profile-scoped numbered environment-key scan, which can raise `UnscopedSecretError` in multiplexed dashboard RPCs.
 
+### Changed
+
+- **gpt-6 family recognised in the model shortlist.** `gpt-6`, `gpt-6.N`, and named variants (`gpt-6-luna`, `gpt-6-sol`) are now treated as flagship chat models and promoted to tier-1 in the model picker. Lightweight variants (`gpt-6-mini`) remain in tier-2.
+- **Hermes version check in `--check`.**  Running `python install.py --check` now reports whether the installed Hermes version supports `classify_api_error` (requires Hermes >= 0.21.0). Older builds load-fail with `ProviderProfile.__init__() got an unexpected keyword argument 'classify_api_error'`; the check flags this before it becomes a silent failure for a colleague.
+- **`default_aux_model` documented.** Inline comment added noting that `claude-haiku-4-5` should be re-probed after each Haiku release.
+
 ### Documentation
 
 - Documented the safe colleague recovery command and the difference between a local plugin installation failure and a Bonzai-side HTTP 500.
@@ -40,3 +46,5 @@
 ### Known issue
 
 A Bonzai HTTP 500 can still originate in the Bonzai service backend. On 23 September 2026, the observed error was a Vertex credential JSON parse failure upstream of Hermes. Reinstalling the plugin cannot repair malformed Bonzai-side Vertex credentials.
+
+The `classify_api_error` plugin kwarg requires Hermes >= 0.21.0. On older builds the plugin fails to load at startup with `ProviderProfile.__init__() got an unexpected keyword argument 'classify_api_error'`. Fix: `hermes update`.

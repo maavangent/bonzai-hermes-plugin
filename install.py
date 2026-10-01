@@ -707,9 +707,42 @@ def stale_installed_files() -> list[str]:
     ]
 
 
+def _hermes_version_str() -> str:
+    """Return the installed Hermes version string, or 'unknown'."""
+    try:
+        from hermes_cli import __version__
+        return str(__version__)
+    except Exception:
+        return "unknown"
+
+
+def _hermes_version_ok(version_str: str) -> bool:
+    """Return True if the version is >= 0.21.0, or if it cannot be determined."""
+    if version_str == "unknown":
+        return True  # fail open
+    try:
+        try:
+            from packaging.version import Version
+            return Version(version_str) >= Version("0.21.0")
+        except ImportError:
+            pass
+        parts = version_str.strip().split(".")
+        major, minor = int(parts[0]), int(parts[1])
+        return (major, minor) >= (0, 21)
+    except Exception:
+        return True  # fail open on parse error
+
+
 def do_check() -> int:
     """Diagnose the installation. Returns a process exit code."""
     problems = 0
+
+    hermes_version = _hermes_version_str()
+    if _hermes_version_ok(hermes_version):
+        log(f"{OK}Hermes version: {hermes_version}")
+    else:
+        log(f"{WARN}Hermes {hermes_version} is too old. This plugin requires Hermes >= 0.21.0 (classify_api_error support). Run 'hermes update'.")
+        problems += 1
 
     if PLUGIN_DIR.is_dir():
         log(f"{OK}Provider installed at {PLUGIN_DIR}")
