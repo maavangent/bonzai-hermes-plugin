@@ -1,6 +1,6 @@
 # Bonzai Hermes Plugin
 
-Hermes model provider plugin for the internal Bonzai API at iO, with built-in multi-key alias support and a native Desktop companion for Hermes Desktop.
+This repository includes the Bonzai provider, installer, Key Manager backend and Hermes Desktop companion extension. Hermes Desktop core model-picker changes are maintained separately in the Hermes repository.
 
 Works on **macOS, Linux and Windows**.
 
@@ -11,6 +11,10 @@ Works on **macOS, Linux and Windows**.
 Before installing the Bonzai plugin, make sure you have:
 1. **[Hermes Desktop App](https://hermes-agent.nousresearch.com/)** installed on your computer.
 2. A **Bonzai API Key** from [bonzai.iodigital.com](https://bonzai.iodigital.com/).
+
+**Hermes update compatibility**
+
+Hermes 0.22.0 and newer uses native registered-provider resolution. Older versions use the compatibility overlay.
 
 ---
 
@@ -61,6 +65,8 @@ Picking a key switches **only the focused chat**. A switch made while Hermes is 
 ### How client keys are kept separate
 
 A client key is stored as its own `.env` secret plus a `model_aliases` entry, never in the Bonzai credential pool. Hermes rotates pool keys automatically after a rate limit or a rejected key, so a pooled client key could silently bill iO work to that client, or the reverse. Key Manager 2.0 moves client keys that older versions put in the pool into aliases the first time Hermes Desktop loads it; `python install.py --check` reports any that remain.
+
+The Key Manager resolves the focused chat's owning Desktop connection and Hermes profile before switching a key. It uses Hermes' routed `config.set` call and refuses the switch if the owner cannot be resolved or focus changes while the request is in progress. Session bindings use the durable stored-session ID; the live model switch uses the runtime session ID. If the focused chat belongs to a different profile than the open Key Manager, the panel asks you to switch to that profile rather than showing a misleading default key.
 
 ---
 
@@ -182,18 +188,47 @@ Restart Hermes afterwards.
 
 ## Which Models You See
 
-`fetch_models` builds a clean two-tier picker list from the live Bonzai catalog:
+- **Picker ordering follows the current curated rule.** Live Bonzai aliases lead in the requested order. Claude stays grouped by subtype; numeric model versions descend within each Claude/Gemini/GLM family. GPT versions descend numerically by model track, with Luna before Sol when versions tie. The newest three recognized releases are retained; GPT-4, O-series, lightweight and unclassified IDs are omitted. Other recognized families follow.
 
-- **Tier 1 (Top of list)** — The **two newest versions of every flagship family** (Gemini Flash/Pro, Claude Sonnet/Opus, GPT-5, GLM, Codestral).
-- **Tier 2** — All other callable models, older versions, and lightweight tiers (`-mini`, `-nano`, `-flash`, `-lite`).
+The provider returns only real, selectable model IDs. Hermes has no provider-level non-selectable divider row, so the plugin doesn't add fake IDs. Search remains available with **CMD+SHIFT+M**.
 
-**Filtered out automatically:**
-- Non-chat endpoints (image generation, TTS, speech-to-text, embeddings, rerankers).
-- Compliance-bypassing `uncompliant-global-*` models.
-- Backend routing duplicates (`-bedrock`, `-vertex`, `eu.anthropic.*`, date-stamped snapshots).
-- Claude duplicate naming schemes (`claude-4-5-sonnet` vs `claude-sonnet-4-5`).
+- **Alias order:** `bonzai-executor`, `bonzai-analyst`, `bonzai-explorer`, `bonzai-architect`, when present.
+- **GPT-6 and GPT-5** are ordered newest generation first, by version within each track, with Luna before Sol on ties. The base generation ID stays distinct if Bonzai returns one.
+- Alias targets are not hardcoded; Bonzai can reroute them server-side.
 
-Every successful fetch is cached in `$HERMES_HOME/bonzai_models_cache.json` for offline resilience.
+**Also filtered out:** non-chat endpoints, compliance-bypassing IDs, backend/region/date duplicates, duplicate Claude naming schemes, lightweight variants, GPT-4, O-series, and unclassified IDs. The plugin doesn't rewrite catalog model IDs.
+
+Successful fetches are cached in `$HERMES_HOME/bonzai_models_cache.json` for offline resilience.
+
+On Hermes Desktop 0.2.7 and newer, the Key Manager can resolve the focused chat's owning connection/profile and route a live model switch through that owner. Stored key bindings stay in the active profile; to manage a chat from another profile, switch Hermes Desktop to that profile first. Older Desktop versions fail closed if owner routing is unavailable.
+
+`GET /sessions` exposes only sessions stored in the active profile. It does not enumerate other profiles through another gateway. The session key is read from `GET /config` for the active profile.
+
+The Key Manager backend avoids Hermes' profile-scoped numbered environment-key scan, which can raise `UnscopedSecretError` in multiplexed dashboard RPCs.
+
+---
+
+## Repo map
+
+| File | Purpose |
+|---|---|
+| `bonzai/__init__.py` | Hermes provider and live model catalog |
+| `install.py` | Cross-platform install, upgrade, check, alias and uninstall commands |
+| `key-manager/dashboard/plugin_api.py` | Secret-safe Key Manager API |
+| `key-manager/desktop/plugin.js` | Hermes Desktop Key Manager extension and key switches |
+| `CHANGELOG.md` | Provider and Key Manager release history |
+| `docs/plans/2026-10-08-picker-and-session-key-analysis.md` | Picker and session-key implementation evidence and verification |
+| `tests/test_shortlist.py` | Ordering and filter regression tests |
+
+## Verification
+
+Run the complete test suite from the repository root with:
+
+```bash
+uv run --with-requirements requirements-test.txt --python 3.11 pytest -q
+```
+
+The JavaScript companion checks run in the pytest suite and require Node.js. `uv run` creates an isolated environment for the test command. Install the same test dependencies in a virtual environment with `python -m pip install -r requirements-test.txt`.
 
 ---
 

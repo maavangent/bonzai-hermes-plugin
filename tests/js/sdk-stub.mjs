@@ -31,23 +31,51 @@ export let calls = [];
 export let notices = [];
 
 export function reset() {
-  state = { focused: "chat-1", rpcError: null, rpcResult: { key: "model", value: "landal" } };
+  state = {
+    focused: "chat-1",
+    owner: { connectionId: "local", profile: "default" },
+    storedId: "stored-chat-1",
+    routes: [{ connectionId: "local", mode: "local", profile: "default", targetProfile: "default" }],
+    rpcError: null,
+    rpcResult: { key: "model", value: "landal" },
+    routeLookupError: null,
+    switchDelay: 0,
+  };
   calls.length = 0;
   notices.length = 0;
 }
 reset();
 
-export const setFocused = (id) => { state.focused = id; };
+export const setFocused = (id) => { state.focused = id; state.storedId = id ? `stored-${id}` : null; };
+export const setOwner = (owner) => { state.owner = owner; };
+export const setRoutes = (routes) => { state.routes = routes; };
+export const setRouteLookupError = (message) => { state.routeLookupError = message; };
+export const setSwitchDelay = (milliseconds) => { state.switchDelay = milliseconds; };
 export const failRpc = (message) => { state.rpcError = message; };
 export const rpcResult = (result) => { state.rpcResult = result; };
+export const snapshot = () => ({ focused: state.focused, storedId: state.storedId, owner: state.owner });
 
-const atom = (read) => ({ read });
+const atom = (read) => ({ read, get: read });
 export const host = {
   state: {
     focusedSessionId: atom(() => state.focused),
-    profile: atom(() => "default"),
+    focusedStoredSessionId: atom(() => state.storedId),
+    focusedSessionOwner: atom(() => state.owner),
+    connectionId: atom(() => "local"),
+    profile: atom(() => state.owner?.profile ?? "default"),
   },
   notify: (notice) => notices.push(notice),
+  profileRoutes: async () => {
+    calls.push({ via: "routes" });
+    if (state.routeLookupError) throw new Error(state.routeLookupError);
+    return state.routes;
+  },
+  requestProfile: async (route, method, params) => {
+    calls.push({ via: "profile-rpc", route, method, params });
+    if (state.switchDelay) await new Promise((resolve) => setTimeout(resolve, state.switchDelay));
+    if (state.rpcError) throw new Error(state.rpcError);
+    return state.rpcResult;
+  },
   request: async (method, params) => {
     calls.push({ via: "rpc", method, params });
     if (state.rpcError) throw new Error(state.rpcError);
@@ -66,6 +94,6 @@ export const ctx = { rest };
 export const useValue = (a) => a.read();
 export const useQueryClient = () => ({ invalidateQueries: async () => {} });
 export function useQuery({ queryKey }) {
-  const data = queryKey[1] === "credentials" ? CREDENTIALS : { sessions: {} };
+  const data = queryKey[0] === "bonzai-key-manager" ? CREDENTIALS : { sessions: {} };
   return { data, isLoading: false, isError: false, isSuccess: true, error: null };
 }

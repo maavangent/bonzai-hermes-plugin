@@ -349,6 +349,16 @@ def test_session_key_assignments_can_be_read_and_set(api):
     assert client.get("/sessions").json()["sessions"] == {}
 
 
+def test_session_key_store_writes_json_atomically(api):
+    _module, _client, home = api
+    store = home / "bonzai_session_keys.json"
+    store.write_text('{"chat-1":"landal"}\n')
+    _module._atomic_write_json(store, {"chat-2": "heineken"})
+
+    assert json.loads(store.read_text()) == {"chat-2": "heineken"}
+    assert list(home.glob(".bonzai_session_keys.json.*")) == []
+
+
 def test_session_key_assignments_reject_invalid_values(api):
     _module, client, _home = api
     assert client.post("/sessions/../escape", json={"slug": "valid"}).status_code in (404, 405, 422)

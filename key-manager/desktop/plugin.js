@@ -165,24 +165,32 @@ async function request(ctx, path, options) {
 }
 
 function useKeyState(ctx) {
-  const focusedSessionId = useValue(host.state.focusedSessionId);
+  const storedSessionId = useValue(host.state.focusedStoredSessionId);
+  const sessionOwner = useValue(host.state.focusedSessionOwner);
   const profile = useValue(host.state.profile);
+  const connectionId = useValue(host.state.connectionId);
+  const ownerMatchesPluginScope = Boolean(
+    sessionOwner && connectionId && sessionOwner.connectionId === connectionId && sessionOwner.profile === profile
+  );
+  const scopeKey = [connectionId ?? null, profile ?? null];
   const credentials = useQuery({
-    queryKey: [...QUERY_KEY, profile],
+    queryKey: [...QUERY_KEY, ...scopeKey],
     queryFn: () => request(ctx, "/credentials"),
   });
   const sessions = useQuery({
-    queryKey: [...SESSIONS_QUERY_KEY, profile],
+    queryKey: [...SESSIONS_QUERY_KEY, ...scopeKey],
     queryFn: () => request(ctx, "/sessions"),
     refetchInterval: 5000,
+    enabled: ownerMatchesPluginScope,
   });
   const entries = useMemo(() => credentialsFrom(credentials.data), [credentials.data]);
-  const activeSlug = (focusedSessionId && sessionMapFrom(sessions.data)[focusedSessionId]) || DEFAULT_SLUG;
+  const activeSlug = (ownerMatchesPluginScope && storedSessionId && sessionMapFrom(sessions.data)[storedSessionId]) || DEFAULT_SLUG;
   const activeEntry = entries.find((entry) => entry.slug === activeSlug);
-  // A binding whose key was removed elsewhere must not look healthy.
   const missing = activeSlug !== DEFAULT_SLUG && credentials.isSuccess && !activeEntry;
-  const activeLabel = activeEntry?.label ?? (activeSlug === DEFAULT_SLUG ? DEFAULT_LABEL : activeSlug);
-  return { focusedSessionId, profile, credentials, entries, activeSlug, activeLabel, missing };
+  const activeLabel = !ownerMatchesPluginScope
+    ? "Open the owning profile"
+    : activeEntry?.label ?? (activeSlug === DEFAULT_SLUG ? DEFAULT_LABEL : activeSlug);
+  return { storedSessionId, sessionOwner, ownerMatchesPluginScope, profile, connectionId, credentials, entries, activeSlug, activeLabel, missing };
 }
 
 export function BonzaiStatusLabel({ ctx }) {
@@ -276,9 +284,91 @@ function KeyRow({ ctx, entry, active, busy, onSelect, onRemoved }) {
   });
 }
 
+const getActiveSessionIdentity = () => ({
+  runtimeId: host.state.focusedSessionId.get(),
+  storedId: host.state.focusedStoredSessionId.get(),
+  owner: host.state.focusedSessionOwner.get(),
+});
+
+const sameSessionIdentity = (left, right) =>
+  left.runtimeId === right.runtimeId &&
+  left.storedId === right.storedId &&
+  left.owner?.connectionId === right.owner?.connectionId &&
+  left.owner?.profile === right.owner?.profile;
+
+async function requestOwnerRoute(owner, identity) {
+  if (!owner || typeof host.profileRoutes !== "function" || typeof host.requestProfile !== "function") {
+    throw new Error("The focused chat owner cannot be resolved on this Hermes Desktop version.");
+  }
+  let routes;
+  try {
+    routes = await host.profileRoutes();
+  } catch (err) {
+    if (!sameSessionIdentity(identity, getActiveSessionIdentity())) {
+      throw new Error("The focused chat changed before the key switch. Try again.");
+    }
+    throw err;
+  }
+  const matches = (Array.isArray(routes) ? routes : []).filter((route) =>
+    route?.connectionId === owner.connectionId && route?.targetProfile === owner.profile
+  );
+  if (matches.length !== 1) throw new Error("The focused chat owner route is missing or ambiguous.");
+  return matches[0];
+}
+
+async function setKeyForFocusedSession(ctx, entry) {
+  const initialIdentity = getActiveSessionIdentity();
+  if (!initialIdentity.runtimeId || !initialIdentity.storedId || !initialIdentity.owner) {
+    host.notify({ kind: "warning", message: "Open a chat first, then pick a key for it." });
+    return;
+  }
+  try {
+    const route = await requestOwnerRoute(initialIdentity.owner, initialIdentity);
+    if (!sameSessionIdentity(initialIdentity, getActiveSessionIdentity())) {
+      throw new Error("The focused chat changed before the key switch. Try again.");
+    }
+    const result = unwrap(await host.requestProfile(route, "config.set", {
+      session_id: initialIdentity.runtimeId,
+      key: "model",
+      value: `${entry.slug} --session`,
+    }));
+    if (result?.confirm_required) {
+      host.notify({ kind: "warning", message: result.confirm_message || result.warning || "Confirm this model in the chat first." });
+      return;
+    }
+    if (!sameSessionIdentity(initialIdentity, getActiveSessionIdentity())) {
+      throw new Error("The focused chat changed during the key switch. The selection was not recorded.");
+    }
+    await request(ctx, `/sessions/${encodeURIComponent(initialIdentity.storedId)}`, {
+      method: "POST",
+      body: { slug: entry.slug },
+    });
+    host.notify({
+      kind: "success",
+      message: result?.deferred
+        ? `${entry.label} takes over after the current reply`
+        : `This chat now uses ${entry.label}`,
+    });
+  } catch (err) {
+    host.notify({ kind: "error", message: `Could not switch key: ${messageOf(err)}` });
+  }
+}
+
 function Manager({ ctx }) {
   const queryClient = useQueryClient();
-  const { focusedSessionId, profile, credentials, entries, activeSlug, activeLabel, missing } = useKeyState(ctx);
+  const { storedSessionId, sessionOwner, ownerMatchesPluginScope, profile, connectionId, credentials, entries, activeSlug, activeLabel, missing } = useKeyState(ctx);
+  const scopedQueryKey = (prefix) => [...prefix, connectionId ?? null, profile ?? null];
+  const activeIdentity = () => ({
+    runtimeId: host.state.focusedSessionId.get(),
+    storedId: host.state.focusedStoredSessionId.get(),
+    owner: host.state.focusedSessionOwner.get(),
+  });
+  const sameIdentity = (left, right) =>
+    left.runtimeId === right.runtimeId &&
+    left.storedId === right.storedId &&
+    left.owner?.connectionId === right.owner?.connectionId &&
+    left.owner?.profile === right.owner?.profile;
+
   const [adding, setAdding] = useState(false);
   const [newLabel, setNewLabel] = useState("");
   const [newKey, setNewKey] = useState("");
@@ -286,43 +376,14 @@ function Manager({ ctx }) {
 
   const refresh = () =>
     Promise.all([
-      queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
-      queryClient.invalidateQueries({ queryKey: SESSIONS_QUERY_KEY }),
+      queryClient.invalidateQueries({ queryKey: scopedQueryKey(QUERY_KEY) }),
+      queryClient.invalidateQueries({ queryKey: scopedQueryKey(SESSIONS_QUERY_KEY) }),
     ]);
 
   const switchKey = async (entry) => {
-    const sessionId = focusedSessionId;
-    if (!sessionId) {
-      host.notify({ kind: "warning", message: "Open a chat first, then pick a key for it." });
-      return;
-    }
     setBusy(true);
     try {
-      // The same RPC Desktop's model picker uses: it reports a failed switch
-      // as an error and defers a switch made while a reply is streaming.
-      const result = unwrap(await host.request("config.set", {
-        session_id: sessionId,
-        key: "model",
-        value: `${entry.slug} --session`,
-      }));
-      if (result?.confirm_required) {
-        host.notify({ kind: "warning", message: result.confirm_message || result.warning || "Confirm this model in the chat first." });
-        return;
-      }
-      // Record the binding only after Hermes accepted the switch, so the
-      // status bar never claims a key this chat is not using.
-      await request(ctx, `/sessions/${encodeURIComponent(sessionId)}`, {
-        method: "POST",
-        body: { slug: entry.slug },
-      });
-      host.notify({
-        kind: "success",
-        message: result?.deferred
-          ? `${entry.label} takes over after the current reply`
-          : `This chat now uses ${entry.label}`,
-      });
-    } catch (err) {
-      host.notify({ kind: "error", message: `Could not switch key: ${messageOf(err)}` });
+      await setKeyForFocusedSession(ctx, entry);
     } finally {
       setBusy(false);
       refresh();
@@ -350,7 +411,7 @@ function Manager({ ctx }) {
     } finally {
       setBusy(false);
     }
-    if (created && focusedSessionId) {
+    if (created && activeIdentity().runtimeId) {
       await switchKey(created);
     } else if (created) {
       host.notify({ kind: "success", message: `Added client key “${created.label}”` });
@@ -359,6 +420,10 @@ function Manager({ ctx }) {
 
   return jsx("div", {
     "data-bonzai-key-manager": "true",
+    "data-testid": "bonzai-key-manager",
+    "data-runtime-session": activeIdentity().runtimeId || "",
+    "data-stored-session": activeIdentity().storedId || "",
+    "data-owner-connection": activeIdentity().owner?.connectionId || "",
     style: styles.pane,
     children: jsx(ScrollArea, {
       style: { flex: 1, minHeight: 0 },
@@ -375,7 +440,9 @@ function Manager({ ctx }) {
               }),
               missing
                 ? jsx("span", { style: styles.hint, children: "This key was removed. Pick another key for this chat." })
-                : null,
+                : !ownerMatchesPluginScope
+                  ? jsx("span", { style: styles.hint, children: "Switch to the profile that owns this chat to manage its keys." })
+                  : null,
             ],
           }),
 
@@ -383,17 +450,19 @@ function Manager({ ctx }) {
             style: { display: "flex", flexDirection: "column", gap: 6 },
             children: [
               jsx("span", { style: styles.headerTitle, children: "Available Keys" }),
-              credentials.isLoading
+              !ownerMatchesPluginScope || credentials.isLoading
                 ? jsx("div", { style: { padding: 12, display: "flex", justifyContent: "center" }, children: jsx(GlyphSpinner, {}) })
                 : null,
-              credentials.isError
+              !ownerMatchesPluginScope || credentials.isError
                 ? jsx(ErrorState, {
-                    title: "Could not load keys",
-                    description: messageOf(credentials.error),
+                    title: ownerMatchesPluginScope ? "Could not load keys" : "Wrong profile",
+                    description: ownerMatchesPluginScope
+                      ? messageOf(credentials.error)
+                      : "Switch to the profile that owns this chat to manage its keys.",
                     children: jsx(Button, { size: "xs", onClick: refresh, children: "Retry" }),
                   })
                 : null,
-              credentials.isSuccess && entries.length === 0
+              ownerMatchesPluginScope && credentials.isSuccess && entries.length === 0
                 ? jsx(EmptyState, { title: "No keys found", description: "Add a Bonzai client key below." })
                 : null,
               jsx("div", {
@@ -452,7 +521,7 @@ function Manager({ ctx }) {
                         size: "xs",
                         type: "submit",
                         disabled: busy || !newLabel.trim() || !newKey.trim(),
-                        children: busy ? "Saving…" : focusedSessionId ? "Save & Use" : "Save",
+                        children: busy ? "Saving…" : activeIdentity().runtimeId ? "Save & Use" : "Save",
                       }),
                     ],
                   }),

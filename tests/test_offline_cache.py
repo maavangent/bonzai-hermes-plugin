@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -36,6 +37,51 @@ def plugin(tmp_path, monkeypatch):
     module = load_plugin()
     module._CACHE.clear()
     return module
+
+
+def test_scoped_environment_read_propagates_secret_scope_failures(plugin, monkeypatch):
+    """A missing multiplex secret must never fall back to the process environment."""
+    agent = types.ModuleType("agent")
+    agent.__path__ = []
+    secret_scope = types.ModuleType("agent.secret_scope")
+    secret_scope.__package__ = "agent"
+
+    def fail_closed(_name, _default=""):
+        raise RuntimeError("profile scope is missing")
+
+    secret_scope.get_secret = fail_closed
+    monkeypatch.setitem(sys.modules, "agent", agent)
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", secret_scope)
+    monkeypatch.setattr(os, "getenv", lambda name, default=None: "launch-profile-key" if name == "BONZAI_API_KEY" else default)
+    with pytest.raises(RuntimeError, match="profile scope is missing"):
+        plugin._scoped_env("BONZAI_API_KEY")
+
+
+def test_scoped_environment_read_falls_back_only_when_hermes_scope_module_is_unavailable(plugin, monkeypatch):
+    agent = types.ModuleType("agent")
+    agent.__path__ = []
+    monkeypatch.setitem(sys.modules, "agent", agent)
+    monkeypatch.delitem(sys.modules, "agent.secret_scope", raising=False)
+    monkeypatch.setattr(
+        os,
+        "getenv",
+        lambda name, default=None: "development-key" if name == "BONZAI_API_KEY" else default,
+    )
+
+    assert plugin._scoped_env("BONZAI_API_KEY") == "development-key"
+
+
+def test_cache_partition_uses_active_hermes_profile_home(plugin, monkeypatch, tmp_path):
+    """Two profile homes with one key must not alias their provider cache."""
+    hermes_constants = types.ModuleType("hermes_constants")
+    current_home = {"value": str(tmp_path / "profile-a")}
+    hermes_constants.get_hermes_home = lambda: current_home["value"]
+    monkeypatch.setitem(sys.modules, "hermes_constants", hermes_constants)
+    key_a = plugin._cache_key("same-key")
+    current_home["value"] = str(tmp_path / "profile-b")
+    key_b = plugin._cache_key("same-key")
+
+    assert key_a != key_b
 
 
 def test_in_process_cache_is_scoped_per_key(plugin):

@@ -32,7 +32,7 @@ def test_provider_manifest_declares_v2_metadata():
     assert "api_version: 1" in manifest
     assert "license: MIT" in manifest
     assert "homepage: https://github.com/maavangent/bonzai-hermes-plugin" in manifest
-    assert "tags: [model-provider, bonzai, iodigital]" in manifest
+    assert yaml.safe_load(MANIFEST.read_text())["version"] == "2.10.0"
 
 
 def load_installer(home: Path):
@@ -385,6 +385,22 @@ def test_configure_bonzai_defaults(tmp_path):
     assert config["model"]["default"] == "gemini-3.7-flash"
     assert "io" in config["model_aliases"]
     assert config["model_aliases"]["io"]["provider"] == "bonzai"
+
+
+def test_add_client_alias_refuses_existing_alias_before_writing_secret(tmp_path):
+    installer = load_installer(tmp_path)
+    installer.CONFIG_FILE = tmp_path / "config.yaml"
+    installer.ENV_FILE = tmp_path / ".env"
+    installer.CONFIG_FILE.write_text(yaml.safe_dump({
+        "model_aliases": {"landal": {"model": "keep-me", "provider": "bonzai"}}
+    }))
+    installer.ENV_FILE.write_text("BONZAI_LANDAL_API_KEY=existing-secret\n")
+
+    with pytest.raises(ValueError, match="already exists"):
+        installer.add_client_alias("Landal", "replacement-secret", "claude-sonnet-5")
+
+    assert installer.get_env_var("BONZAI_LANDAL_API_KEY") == "existing-secret"
+    assert installer._load_config()["model_aliases"]["landal"]["model"] == "keep-me"
 
 
 def test_add_client_alias(tmp_path):

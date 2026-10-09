@@ -1,8 +1,7 @@
-"""Bonzai API provider for iO
+"""Bonzai API provider for iO.
 
-Builds an ordered picker list from the live Bonzai catalog: the two newest
-versions of every model family up top, followed by everything else callable.
-See README ("Which models you see") for the full rules.
+Builds a clean, ordered picker list from the live Bonzai catalog. See README
+("Which models you see") for the selection and ordering rules.
 """
 
 from __future__ import annotations
@@ -35,9 +34,11 @@ def _scoped_env(name: str) -> str:
     """
     try:
         from agent.secret_scope import get_secret
-        return (get_secret(name, "") or "").strip()
-    except Exception:
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"agent", "agent.secret_scope"}:
+            raise
         return (os.getenv(name) or "").strip()
+    return (get_secret(name, "") or "").strip()
 
 logger = logging.getLogger(__name__)
 
@@ -126,20 +127,25 @@ _NON_CHAT = re.compile(
     re.IGNORECASE,
 )
 
-# Display order of families in tier 1 (newest of each shown up top).
+# First rows are Bonzai's live, semantic aliases. IDs are checked against the
+# live catalog below; targets are never hardcoded because the service may reroute.
+_BONZAI_ALIAS_ORDER = [
+    "bonzai-executor", "bonzai-analyst", "bonzai-explorer", "bonzai-architect",
+]
+
+# GPT generations are listed first. GPT tracks are parsed independently by
+# numeric release, then the other supported family order follows.
 _FAMILY_ORDER = [
+    "gpt-6-luna", "gpt-6-sol", "gpt-6",
+    "gpt-5-luna", "gpt-5-sol", "gpt-5-terra", "gpt-5",
     "claude-opus", "claude-sonnet", "claude-haiku",
-    "gpt-6", "gpt-5", "gpt-4", "o-series",
     "gemini-pro", "gemini-flash",
     "glm", "mistral-codestral", "mistral-devstral",
 ]
 
-# How many VERSIONS of each family lead the picker. Two, so a newly released
-# flagship is visible immediately while the previous version — still the safe,
-# proven pick — stays one keystroke away instead of later in the list.
-# Counted per version, not per model id: when a single version ships as several
-# named variants (gpt-5.6-luna / -sol / -terra) all of them come along.
-_TIER1_VERSIONS_PER_FAMILY = 2
+# Number of numeric releases per recognized family retained in the picker.
+# Same-release IDs with distinct model tracks remain distinct picker choices.
+_MAX_VERSIONS_PER_FAMILY = 3
 
 # Claude ids that spell the version BEFORE the family (claude-3-haiku,
 # claude-4-sonnet). The desktop picker derives its label straight from the model
@@ -152,7 +158,7 @@ _TIER1_VERSIONS_PER_FAMILY = 2
 _CLAUDE_VERSION_FIRST = re.compile(r"^claude-\d+(?:-\d+)?-(sonnet|opus|haiku)$")
 
 # Suffixes that mark a cheaper/faster derivative rather than a new flagship.
-# These never occupy a tier-1 slot; they stay reachable later in the list.
+# Versions newer than this stay in a small, sortable same-generation family.
 _LIGHTWEIGHT_SUFFIX = re.compile(r"-(mini|nano|lite|flash|fast|small|tiny)$")
 
 
@@ -181,32 +187,35 @@ def _claude_identity(m: str):
 
 
 def _tier1_family(m: str):
-    """Return (family, version) if ``m`` is a flagship chat model eligible for
-    tier 1, else (None, None). Lightweight tiers (mini/nano/lite/flash) and
-    non-chat models are intentionally NOT flagships — they fall to tier 2.
-    """
+    """Return a versioned family key for models eligible in the compact picker."""
     key, ver = _claude_identity(m)
     if key:
         return "-".join(key.split("-")[:2]), ver  # claude-opus / -sonnet / -haiku
     if re.match(r"^gpt-6(?:\.\d+)?$", m):
         return "gpt-6", (float(m.split("-")[1]),)
-    # Named GPT-6 variants (gpt-6-luna, gpt-6.1-luna). Lightweight tiers excluded.
+    # Keep named GPT-6 tracks independent: Luna and Sol may publish on
+    # different version cadences, so rank versions within each track.
     g = re.match(r"^gpt-(6(?:\.\d+)?)-([a-z][a-z0-9-]*)$", m)
     if g and not _LIGHTWEIGHT_SUFFIX.search(m):
-        return "gpt-6", (float(g.group(1)),)
+        return f"gpt-6-{g.group(2)}", (float(g.group(1)),)
     if re.match(r"^gpt-5(?:\.\d+)?$", m):
         return "gpt-5", (float(m.split("-")[1]),)
-    # Named GPT variants belong to their numeric generation. All variants of
-    # a selected version are promoted together by _build_smart_shortlist.
+    # Named GPT-5 tracks follow the same per-track release ordering.
     g = re.match(r"^gpt-(5(?:\.\d+)?)-([a-z][a-z0-9-]*)$", m)
     if g and not _LIGHTWEIGHT_SUFFIX.search(m):
-        return "gpt-5", (float(g.group(1)),)
-    if m == "gpt-4o":
+        return f"gpt-5-{g.group(2)}", (float(g.group(1)),)
+    g = re.match(r"^gpt-(4o|4\.\d+|4)-([a-z][a-z0-9-]*)$", m)
+    if g and not _LIGHTWEIGHT_SUFFIX.search(m):
+        version = 4.0 if g.group(1) in {"4", "4o"} else float(g.group(1))
+        return "gpt-4", (version,)
+    if re.match(r"^gpt-4o$", m):
         return "gpt-4", (4.0,)
-    if re.match(r"^gpt-4\.\d+$", m):
+    if re.match(r"^gpt-4(?:\.\d+)?$", m):
         return "gpt-4", (float(m.split("-")[1]),)
-    if re.match(r"^o\d+$", m):
-        return "o-series", (int(m[1:]),)
+    if m == "gpt-4o-mini":
+        return None, None
+    if m.startswith("o"):
+        return None, None
     g = re.match(r"^gemini-(\d+(?:\.\d+)?)-(pro|flash)$", m)
     if g:
         return f"gemini-{g.group(2)}", (float(g.group(1)),)
@@ -220,18 +229,7 @@ def _tier1_family(m: str):
 
 
 def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
-    """Build a two-tier picker list.
-
-    Tier 1: the newest flagship chat model per family (Claude/GPT/Gemini/...).
-    Tier 2: every other selectable chat model — older versions and lightweight
-    tiers (mini/nano/flash).
-
-    Hidden entirely: PURE duplicates (backend routes -bedrock/-vertex,
-    region/vendor prefixes eu.anthropic.*, dated snapshots), compliance-bypass
-    "uncompliant-global-*" models, and non-chat models (image/tts/whisper/
-    embeddings/rerank). The two Claude naming schemes are deduped to the
-    cleanest spelling. Every id that survives is a real, callable chat model.
-    """
+    """Build a compact ordered provider list: aliases, then recent versions."""
     from collections import defaultdict
 
     # 1. Drop pure duplicates and non-chat models; dedupe Claude naming schemes.
@@ -259,33 +257,58 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
     #     word order ("3 Haiku") next to "Haiku 4 5" in the picker.
     kept = [m for m in kept if not _CLAUDE_VERSION_FIRST.match(m)]
 
-    # 2. Tier 1: the _TIER1_VERSIONS_PER_FAMILY newest versions per family,
-    #    in display order. A version that ships as several named variants
-    #    (gpt-5.6-luna / -sol / -terra) contributes all of them, because they
-    #    are one release the user must be able to choose between.
+    # 2. Keep each recognized track's three newest releases and all real
+    # variants within each release. Track order comes from _FAMILY_ORDER.
     groups: dict = defaultdict(list)
     for m in kept:
         fam, ver = _tier1_family(m)
         if fam:
             groups[fam].append((ver, m))
 
-    tier1: list[str] = []
-    for fam in _FAMILY_ORDER:
-        if fam not in groups:
-            continue
+    buckets_by_track: dict[str, list[list[str]]] = {}
+    for family in _FAMILY_ORDER:
         by_version: dict = defaultdict(list)
-        for ver, m in groups[fam]:
-            by_version[ver].append(m)
-        newest = sorted(by_version, reverse=True)[:_TIER1_VERSIONS_PER_FAMILY]
-        for ver in newest:
-            tier1.extend(sorted(by_version[ver]))
+        for version, model in groups.get(family, []):
+            by_version[version].append(model)
+        versions = sorted(by_version, reverse=True)[:_MAX_VERSIONS_PER_FAMILY]
+        buckets_by_track[family] = [sorted(by_version[version]) for version in versions]
 
-    # Families the regexes don't know are NOT dropped — tier 2 collects them.
-    # 3. Tier 2: everything else, sorted alphabetically.
-    tier1_set = set(tier1)
-    tier2 = sorted(m for m in kept if m not in tier1_set)
+    # Keep Claude's newest release block first. GPT releases sort numerically
+    # across the generation tracks; exact ties sort by family name so Luna
+    # precedes Sol. IDs remain separate selectable catalog entries.
+    claude_families = [family for family in _FAMILY_ORDER if family.startswith("claude-")]
+    claude_latest = [
+        model
+        for family in claude_families
+        for model in (buckets_by_track[family][0] if buckets_by_track[family] else [])
+    ]
+    gpt_families = [family for family in _FAMILY_ORDER if family.startswith("gpt-")]
+    gpt_rows: list[tuple[float, str, str]] = []
+    for family in gpt_families:
+        versions = sorted({version for version, _model in groups.get(family, [])}, reverse=True)
+        retained_versions = set(versions[:_MAX_VERSIONS_PER_FAMILY])
+        gpt_rows.extend(
+            (version[0], family, model)
+            for version, model in groups.get(family, [])
+            if version in retained_versions
+        )
+    gpt_rows.sort(key=lambda row: (-row[0], row[1].casefold(), row[2].casefold()))
+    gpt_models = [model for _version, _family, model in gpt_rows]
 
-    return tier1 + tier2
+    other_families = [family for family in _FAMILY_ORDER if family not in claude_families and not family.startswith("gpt-")]
+    remaining_models: list[str] = []
+    for release_index in range(_MAX_VERSIONS_PER_FAMILY):
+        for family in claude_families:
+            if release_index > 0 and release_index < len(buckets_by_track[family]):
+                remaining_models.extend(buckets_by_track[family][release_index])
+        for family in other_families:
+            if release_index < len(buckets_by_track[family]):
+                remaining_models.extend(buckets_by_track[family][release_index])
+
+    ordered_models = claude_latest + gpt_models + remaining_models
+    ordered_models = [m for m in ordered_models if not m.startswith(("gpt-4", "o"))]
+    aliases = [m for m in _BONZAI_ALIAS_ORDER if m in kept]
+    return aliases + ordered_models
 
 
 

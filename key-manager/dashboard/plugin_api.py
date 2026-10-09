@@ -8,6 +8,8 @@ work to a client (and the reverse). A client key therefore lives in exactly one
 place: an ``.env`` secret plus a ``model_aliases`` entry whose ``key_env``
 points at it. Selecting a key is a per-session ``/model <alias>`` switch.
 Keys added by older versions as manual pool rows are migrated on first use.
+
+Concurrency and profile boundaries matter here: session-key JSON updates use an inter-process file lock and atomic replacement. The Desktop companion routes live model changes to the focused session owner's profile, while this HTTP API deliberately serves only the currently active Hermes profile; it does not proxy requests across profiles.
 """
 from __future__ import annotations
 
@@ -406,12 +408,12 @@ def _session_keys_lock():
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
+    store_bytes = json.dumps(data, indent=2).encode("utf-8") + b"\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2)
-            handle.write("\n")
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(store_bytes)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_name, path)

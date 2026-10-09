@@ -446,14 +446,18 @@ def add_client_alias(name: str, api_key: str, model: str = "gemini-3.7-flash") -
         raise ValueError(f"'{clean_name}' is reserved for the default iO key. Choose a client name.")
 
     env_var = f"BONZAI_{clean_name.upper().replace('-', '_')}_API_KEY"
-    set_env_var(env_var, api_key.strip())
-    log(f"{OK}{env_var} saved to {ENV_FILE}")
-
     config = _load_config()
     aliases = config.setdefault("model_aliases", {})
     if not isinstance(aliases, dict):
         aliases = {}
         config["model_aliases"] = aliases
+    if clean_name in aliases:
+        raise ValueError(f"Alias '{clean_name}' already exists. Choose a different name.")
+
+    # Check collisions before writing the secret so a failed add cannot change
+    # an existing key or leave an orphaned environment variable.
+    set_env_var(env_var, api_key.strip())
+    log(f"{OK}{env_var} saved to {ENV_FILE}")
 
     aliases[clean_name] = {
         "model": model.strip(),
