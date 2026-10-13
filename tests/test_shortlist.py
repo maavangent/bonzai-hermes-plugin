@@ -242,7 +242,18 @@ def test_shortlist_is_compact_and_has_only_real_unique_ids():
     assert len(shown) == len(set(shown))
 
 
-def test_aliases_remain_first_and_unrecognized_models_are_not_synthesized():
+def test_other_families_are_sorted_globally_by_numeric_release():
+    raw = [
+        "gemini-2.5-pro", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
+        "glm-5", "glm-4.7", "codestral-latest", "devstral-2-123b",
+    ]
+
+    assert module._build_smart_shortlist(raw) == [
+        "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-2.5-pro",
+        "glm-5", "glm-4.7", "codestral-latest", "devstral-2-123b",
+    ]
+
+
     raw = ["claude-opus-5-5", "bonzai-architect", "bonzai-executor", "vendor-new-model"]
 
     shown = module._build_smart_shortlist(raw)

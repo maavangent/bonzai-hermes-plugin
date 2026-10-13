@@ -139,7 +139,7 @@ _FAMILY_ORDER = [
     "gpt-6-luna", "gpt-6-sol", "gpt-6",
     "gpt-5-luna", "gpt-5-sol", "gpt-5-terra", "gpt-5",
     "claude-opus", "claude-sonnet", "claude-haiku",
-    "gemini-pro", "gemini-flash",
+    "gemini-flash", "gemini-pro",
     "glm", "mistral-codestral", "mistral-devstral",
 ]
 
@@ -296,16 +296,28 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
     gpt_models = [model for _version, _family, model in gpt_rows]
 
     other_families = [family for family in _FAMILY_ORDER if family not in claude_families and not family.startswith("gpt-")]
-    remaining_models: list[str] = []
-    for release_index in range(_MAX_VERSIONS_PER_FAMILY):
-        for family in claude_families:
-            if release_index > 0 and release_index < len(buckets_by_track[family]):
-                remaining_models.extend(buckets_by_track[family][release_index])
-        for family in other_families:
-            if release_index < len(buckets_by_track[family]):
-                remaining_models.extend(buckets_by_track[family][release_index])
 
-    ordered_models = claude_latest + gpt_models + remaining_models
+    # Keep older Claude releases together after the flagship block. Other
+    # families are sorted globally by numeric release. The previous family
+    # bucket walk made Gemini 3.7 Flash appear below unrelated models.
+    claude_remaining: list[str] = []
+    for release_index in range(1, _MAX_VERSIONS_PER_FAMILY):
+        for family in claude_families:
+            if release_index < len(buckets_by_track[family]):
+                claude_remaining.extend(buckets_by_track[family][release_index])
+
+    family_rank = {family: index for index, family in enumerate(other_families)}
+    other_rows: list[tuple[float, int, str]] = []
+    for family in other_families:
+        model_versions = {model: version for version, model in groups[family]}
+        for bucket in buckets_by_track[family]:
+            for model in bucket:
+                version = model_versions[model][0]
+                other_rows.append((version, family_rank[family], model))
+    other_rows.sort(key=lambda row: (row[1], -row[0], row[2].casefold()))
+    other_models = [model for _version, _family_rank, model in other_rows]
+
+    ordered_models = claude_latest + gpt_models + claude_remaining + other_models
     ordered_models = [m for m in ordered_models if not m.startswith(("gpt-4", "o"))]
     aliases = [m for m in _BONZAI_ALIAS_ORDER if m in kept]
     return aliases + ordered_models
