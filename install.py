@@ -28,6 +28,10 @@ Honors the HERMES_HOME environment variable; falls back to ~/.hermes.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import ast
+import getpass
+import importlib.util
 import os
 import re
 import shutil
@@ -56,7 +60,24 @@ PLUGIN_DIR = HERMES_HOME / "plugins" / "model-providers" / "bonzai"
 KEY_MANAGER_ID = "bonzai-key-manager"
 KEY_MANAGER_DIR = HERMES_HOME / "plugins" / KEY_MANAGER_ID
 DESKTOP_PLUGIN_FILE = HERMES_HOME / "desktop-plugins" / KEY_MANAGER_ID / "plugin.js"
-PROVIDERS_FILE = HERMES_ROOT / "hermes-agent" / "hermes_cli" / "providers.py"
+def resolve_providers_file(root: Path) -> Path:
+    """Discover source without importing Hermes or loading its profile secrets."""
+    conventional = root / "hermes-agent" / "hermes_cli" / "providers.py"
+    for candidate in (conventional, Path(sys.prefix).parent / "hermes_cli" / "providers.py"):
+        if candidate.is_file():
+            return candidate
+    try:
+        spec = importlib.util.find_spec("hermes_cli")
+        for location in (spec.submodule_search_locations or []) if spec else []:
+            candidate = Path(location) / "providers.py"
+            if candidate.is_file():
+                return candidate
+    except (ImportError, ValueError, AttributeError):
+        pass
+    return conventional
+
+
+PROVIDERS_FILE = resolve_providers_file(HERMES_ROOT)
 CACHE_FILE = HERMES_HOME / "provider_models_cache.json"
 SOURCE_PLUGIN = SCRIPT_DIR / "bonzai"
 SOURCE_KEY_MANAGER = SCRIPT_DIR / "key-manager"
@@ -80,15 +101,16 @@ OVERLAY = (
 
 def _find_hermes_python() -> Path | None:
     """Locate the Python executable inside Hermes's own virtualenv."""
+    roots = [
+        HERMES_ROOT / "hermes-agent", HERMES_ROOT,
+        Path.home() / ".local" / "share" / "hermes-agent",
+        Path.home() / "AppData" / "Local" / "hermes-agent",
+    ]
     candidates = [
-        HERMES_ROOT / "hermes-agent" / "venv" / "bin" / "python3",
-        HERMES_ROOT / "hermes-agent" / "venv" / "bin" / "python",
-        HERMES_ROOT / "venv" / "bin" / "python3",
-        HERMES_ROOT / "venv" / "bin" / "python",
-        Path.home() / ".local" / "share" / "hermes-agent" / "venv" / "bin" / "python3",
-        HERMES_ROOT / "hermes-agent" / "venv" / "Scripts" / "python.exe",
-        HERMES_ROOT / "venv" / "Scripts" / "python.exe",
-        Path.home() / "AppData" / "Local" / "hermes-agent" / "venv" / "Scripts" / "python.exe",
+        root / venv / executable
+        for root in roots
+        for venv in (".venv", "venv")
+        for executable in ("bin/python3", "bin/python", "Scripts/python.exe")
     ]
     for c in candidates:
         if c.is_file():
@@ -176,17 +198,29 @@ def _native_provider_resolution_supported() -> bool:
     needed. Keep the source check deliberately narrow and fail closed for older
     or unusual installations, where the legacy overlay remains the safe fallback.
     """
-    if not PROVIDERS_FILE.is_file():
-        return False
     try:
-        content = PROVIDERS_FILE.read_text(encoding="utf-8")
-    except OSError:
+        tree = ast.parse(PROVIDERS_FILE.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
         return False
-    return (
-        "def resolve_provider_full(" in content
-        and "_plugin_profile_pdef" in content
-        and 'return pdef if pdef is not None and pdef.id != "custom" else None' in content
-    )
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    resolver = functions.get("resolve_provider_full")
+    if resolver is None or "_plugin_profile_pdef" not in functions:
+        return False
+    # Inspect actual call paths, not comments or an exact upstream return spelling.
+    pending = [resolver]
+    visited = set()
+    while pending:
+        function = pending.pop()
+        if function.name in visited:
+            continue
+        visited.add(function.name)
+        for node in ast.walk(function):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id == "_plugin_profile_pdef":
+                    return True
+                if node.func.id in functions:
+                    pending.append(functions[node.func.id])
+    return False
 
 
 def add_overlay() -> None:
@@ -259,9 +293,23 @@ def _load_config() -> dict:
     _require_yaml()
     if not CONFIG_FILE.is_file():
         return {}
-    config = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
+    try:
+        config = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise RuntimeError(f"Hermes config at {CONFIG_FILE} is invalid YAML") from exc
+    if config is None:
+        config = {}
     if not isinstance(config, dict):
         raise RuntimeError(f"Hermes config at {CONFIG_FILE} must contain a YAML mapping")
+    for section in ("plugins", "model_aliases"):
+        if section in config and not isinstance(config[section], dict):
+            raise RuntimeError(f"Hermes config '{section}' value must be a mapping")
+    if "model" in config and not isinstance(config["model"], (dict, str)):
+        raise RuntimeError("Hermes config 'model' value must be a mapping or model name")
+    for field in ("enabled", "disabled"):
+        entries = config.get("plugins", {}).get(field, [])
+        if not isinstance(entries, list) or not all(isinstance(item, str) for item in entries):
+            raise RuntimeError(f"Hermes plugins.{field} must be lists of strings")
     return config
 
 
@@ -395,32 +443,33 @@ def set_env_var(var_name: str, value: str) -> None:
 
 
 def configure_bonzai_defaults(api_key: str | None = None) -> None:
-    """Configure default provider, model, and model_aliases in config.yaml."""
+    """Add Bonzai defaults without switching an existing unrelated provider."""
+    config = _load_config()
     if api_key:
         set_env_var("BONZAI_API_KEY", api_key)
         log(f"{OK}BONZAI_API_KEY saved to {ENV_FILE}")
 
-    config = _load_config()
-
-    # Configure model defaults
+    # Only a fresh configuration or an existing Bonzai selection is ours to fill.
     model_cfg = config.setdefault("model", {})
-    if isinstance(model_cfg, dict):
+    if isinstance(model_cfg, dict) and (
+        model_cfg.get("provider") == "bonzai" or not model_cfg
+    ):
         model_cfg["provider"] = "bonzai"
-        model_cfg["base_url"] = "https://api-v2.bonzai.iodigital.com"
+        model_cfg.setdefault("base_url", "https://api-v2.bonzai.iodigital.com")
         if not model_cfg.get("default"):
-            model_cfg["default"] = "gemini-3.7-flash"
+            model_cfg["default"] = "gpt-6-luna"
 
     # Configure default aliases
     aliases = config.setdefault("model_aliases", {})
     if isinstance(aliases, dict):
         if "io" not in aliases:
             aliases["io"] = {
-                "model": "gemini-3.7-flash",
+                "model": model_cfg.get("default", "gpt-6-luna") if isinstance(model_cfg, dict) and model_cfg.get("provider") == "bonzai" else "gpt-6-luna",
                 "provider": "bonzai",
             }
 
     _save_config(config)
-    log(f"{OK}Bonzai configured as default provider with 'gemini-3.7-flash' in {CONFIG_FILE}")
+    log(f"{OK}Bonzai alias 'io' configured in {CONFIG_FILE}; existing model selection preserved.")
 
 
 RESERVED_ALIASES = frozenset({"io", "default", "bonzai", "bonzai-api-key"})
@@ -431,6 +480,48 @@ def slugify(name: str) -> str:
     slug = re.sub(r"[\s_]+", "-", name.strip().lower())
     slug = re.sub(r"[^a-z0-9-]", "", slug)
     return re.sub(r"-{2,}", "-", slug).strip("-")
+
+
+def _env_assignment_exists(var_name: str) -> bool:
+    """Include empty/exported assignments when rejecting an orphan collision."""
+    if not ENV_FILE.is_file():
+        return False
+    pattern = rf"^\s*(?:export\s+)?{re.escape(var_name)}\s*="
+    return any(re.match(pattern, line) for line in ENV_FILE.read_text(encoding="utf-8").splitlines())
+
+
+def _restore_installer_file(path: Path, snapshot: tuple[bytes, int] | None) -> None:
+    """Restore an installer-owned snapshot atomically, without reparsing secrets."""
+    if snapshot is None:
+        path.unlink(missing_ok=True)
+        return
+    content, mode = snapshot
+    fd, temporary = tempfile.mkstemp(prefix=".bonzai-rollback-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+@contextmanager
+def _installer_config_transaction():
+    """Rollback only this installer's exact .env/config targets on write failure."""
+    snapshots = {
+        path: (path.read_bytes(), path.stat().st_mode & 0o777) if path.exists() else None
+        for path in (ENV_FILE, CONFIG_FILE)
+    }
+    try:
+        yield
+    except BaseException:
+        for path, snapshot in snapshots.items():
+            _restore_installer_file(path, snapshot)
+        raise
 
 
 def add_client_alias(name: str, api_key: str, model: str = "gemini-3.7-flash") -> str:
@@ -453,12 +544,11 @@ def add_client_alias(name: str, api_key: str, model: str = "gemini-3.7-flash") -
         config["model_aliases"] = aliases
     if clean_name in aliases:
         raise ValueError(f"Alias '{clean_name}' already exists. Choose a different name.")
+    if _env_assignment_exists(env_var):
+        raise ValueError(f"Environment variable '{env_var}' already exists. Choose a different name.")
 
     # Check collisions before writing the secret so a failed add cannot change
     # an existing key or leave an orphaned environment variable.
-    set_env_var(env_var, api_key.strip())
-    log(f"{OK}{env_var} saved to {ENV_FILE}")
-
     aliases[clean_name] = {
         "model": model.strip(),
         "provider": "custom",
@@ -466,7 +556,10 @@ def add_client_alias(name: str, api_key: str, model: str = "gemini-3.7-flash") -
         "key_env": env_var,
         "label": name.strip(),
     }
-    _save_config(config)
+    with _installer_config_transaction():
+        set_env_var(env_var, api_key.strip())
+        _save_config(config)
+    log(f"{OK}{env_var} saved to {ENV_FILE}")
     log(f"{OK}Client alias '{clean_name}' added to {CONFIG_FILE}")
     log(f"{INFO}Use directly in chat: /model {clean_name}")
     return clean_name
@@ -491,19 +584,23 @@ def prompt_api_key_if_needed() -> str | None:
                 return None
             elif choice == "2":
                 client_name = input("Client / project name (e.g. landal, heineken): ").strip()
-                if client_name:
-                    model = input("Preferred model for this client [gemini-3.7-flash]: ").strip() or "gemini-3.7-flash"
-                    try:
+                if not client_name:
+                    return None
+                model = input("Preferred model for this client [gemini-3.7-flash]: ").strip() or "gemini-3.7-flash"
+                log("A different default iO key is required to move this key to a client.")
+                new_key = getpass.getpass("New default Bonzai API Key (Enter cancels the move): ").strip()
+                if not new_key or new_key == existing_key:
+                    log(f"{WARN}Key move cancelled; no client alias was created.")
+                    return None
+                try:
+                    with _installer_config_transaction():
                         slug = add_client_alias(client_name, existing_key, model)
-                        log(f"{OK}Assigned existing key to alias '{slug}'.")
-                    except ValueError as exc:
-                        log(f"{WARN}{exc}")
-                        return None
-                
-                log("")
-                log("Now, enter your new default iO API key (or press Enter to skip):")
-                new_key = input("Paste new default Bonzai API Key: ").strip()
-                return new_key if new_key else None
+                        set_env_var("BONZAI_API_KEY", new_key)
+                except ValueError as exc:
+                    log(f"{WARN}{exc}")
+                    return None
+                log(f"{OK}Moved existing key to alias '{slug}' and replaced the default key.")
+                return new_key
             elif choice == "3":
                 pass  # Fall through to prompt
         except (EOFError, KeyboardInterrupt):
@@ -512,7 +609,7 @@ def prompt_api_key_if_needed() -> str | None:
     log("")
     log("👉 Get your Bonzai API key at: https://bonzai.iodigital.com/")
     try:
-        key = input("Paste your Bonzai API Key here: ").strip()
+        key = getpass.getpass("Paste your Bonzai API Key here: ").strip()
         if key:
             return key
     except (EOFError, KeyboardInterrupt):
@@ -540,7 +637,7 @@ def interactive_add_alias() -> None:
                 key = existing_key
 
         if not key:
-            key = input(f"Paste the Bonzai API Key for '{name}': ").strip()
+            key = getpass.getpass(f"Paste the Bonzai API Key for '{name}': ").strip()
         if not key:
             log(f"{WARN}No key provided. Operation cancelled.")
             return
@@ -594,6 +691,7 @@ def interactive_menu() -> None:
 
 def do_install(interactive: bool = False) -> None:
     log("Installing Bonzai Hermes plugin...")
+    _load_config()  # Fail before replacing any installed files.
 
     if not SOURCE_PLUGIN.is_dir() or not SOURCE_KEY_MANAGER.is_dir() or not SOURCE_DESKTOP_PLUGIN.is_file():
         log(f"{WARN}One or more source plugin files are missing from {SCRIPT_DIR}")
@@ -635,11 +733,12 @@ def do_install(interactive: bool = False) -> None:
     log(f"{OK}Installation complete!")
     log("====================================================")
     log("Restart Hermes Desktop (or run 'hermes gateway restart').")
-    log("Bonzai is now ready with 'gemini-3.7-flash' as your default model!")
+    log("Use '/model io' to select Bonzai. Run 'python install.py --check' to verify configuration.")
 
 
 def do_uninstall() -> None:
     log("Uninstalling Bonzai Hermes plugin...")
+    _load_config()  # Fail before removing files if the enablement edit is unsafe.
 
     if PLUGIN_DIR.exists():
         shutil.rmtree(PLUGIN_DIR)
@@ -701,6 +800,8 @@ def stale_installed_files() -> list[str]:
     """Installed copies that no longer match this checkout."""
     pairs = [
         (SOURCE_PLUGIN / "__init__.py", PLUGIN_DIR / "__init__.py"),
+        (SOURCE_PLUGIN / "plugin.yaml", PLUGIN_DIR / "plugin.yaml"),
+        (SOURCE_KEY_MANAGER / "plugin.yaml", KEY_MANAGER_DIR / "plugin.yaml"),
         (SOURCE_KEY_MANAGER / "dashboard" / "plugin_api.py", KEY_MANAGER_DIR / "dashboard" / "plugin_api.py"),
         (SOURCE_DESKTOP_PLUGIN, DESKTOP_PLUGIN_FILE),
     ]
@@ -749,7 +850,16 @@ def do_check() -> int:
         problems += 1
 
     if PLUGIN_DIR.is_dir():
-        log(f"{OK}Provider installed at {PLUGIN_DIR}")
+        manifest = PLUGIN_DIR / "plugin.yaml"
+        try:
+            metadata = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+        except Exception:
+            metadata = None
+        if isinstance(metadata, dict) and metadata.get("kind") == "model-provider" and (PLUGIN_DIR / "__init__.py").is_file():
+            log(f"{OK}Provider installed at {PLUGIN_DIR}")
+        else:
+            log(f"{WARN}Provider manifest (kind: model-provider) or __init__.py entrypoint missing/invalid")
+            problems += 1
     else:
         log(f"{WARN}Provider NOT installed (expected {PLUGIN_DIR})")
         problems += 1
@@ -763,10 +873,10 @@ def do_check() -> int:
                 kind = None
         else:
             kind = None
-        if kind == "backend":
+        if kind == "backend" and (KEY_MANAGER_DIR / "dashboard" / "plugin_api.py").is_file():
             log(f"{OK}Key Manager backend installed at {KEY_MANAGER_DIR}")
         else:
-            log(f"{WARN}Key Manager manifest is not kind: backend")
+            log(f"{WARN}Key Manager manifest (kind: backend) or dashboard/plugin_api.py entrypoint missing/invalid")
             problems += 1
     else:
         log(f"{WARN}Key Manager backend NOT installed (expected {KEY_MANAGER_DIR})")
@@ -778,7 +888,12 @@ def do_check() -> int:
         log(f"{WARN}Desktop companion NOT installed (expected {DESKTOP_PLUGIN_FILE})")
         problems += 1
 
-    if key_manager_enabled():
+    try:
+        backend_enabled = key_manager_enabled()
+    except (RuntimeError, OSError) as exc:
+        log(f"{WARN}{exc}")
+        backend_enabled = False
+    if backend_enabled:
         log(f"{OK}{KEY_MANAGER_ID} backend is enabled")
     else:
         log(f"{WARN}{KEY_MANAGER_ID} backend is not enabled or is explicitly disabled")
@@ -802,6 +917,7 @@ def do_check() -> int:
         log(f"{OK}BONZAI_API_KEY is configured in {ENV_FILE}")
     else:
         log(f"{WARN}BONZAI_API_KEY is missing from {ENV_FILE}")
+        problems += 1
 
     pooled = pooled_client_keys()
     if pooled:

@@ -2,7 +2,13 @@
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
-set "HERMES_PY=%USERPROFILE%\.hermes\hermes-agent\venv\Scripts\python.exe"
+set "HERMES_PY=%USERPROFILE%\.hermes\hermes-agent\.venv\Scripts\python.exe"
+if not exist "!HERMES_PY!" (
+    set "HERMES_PY=%USERPROFILE%\.hermes\hermes-agent\venv\Scripts\python.exe"
+)
+if not exist "!HERMES_PY!" (
+    set "HERMES_PY=%LOCALAPPDATA%\hermes-agent\.venv\Scripts\python.exe"
+)
 if not exist "!HERMES_PY!" (
     set "HERMES_PY=%LOCALAPPDATA%\hermes-agent\venv\Scripts\python.exe"
 )
@@ -13,9 +19,11 @@ if not exist "!HERMES_PY!" (
 )
 
 "!HERMES_PY!" install.py --interactive
-if errorlevel 1 (
+set "INSTALL_STATUS=!errorlevel!"
+if not "!INSTALL_STATUS!"=="0" (
     echo.
     echo Installation did not finish. If Python is missing, install Hermes Desktop first.
 )
 echo.
 pause
+exit /b !INSTALL_STATUS!

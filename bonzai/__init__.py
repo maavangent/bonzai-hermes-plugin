@@ -81,17 +81,33 @@ def _offline_cache_path():
         return Path(home) / _OFFLINE_CACHE_NAME
 
 
-def _store_offline_models(models: list) -> None:
+def _store_offline_models(models: list, *, api_key: str, items: list | None = None) -> None:
     """Persist a successful fetch. Best-effort: never breaks a good fetch."""
+    import tempfile
+
+    temporary = None
     try:
         path = _offline_cache_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"models": list(models), "ts": time.time()}))
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=path.name + ".", delete=False) as handle:
+            temporary = handle.name
+            os.chmod(temporary, 0o600)
+            json.dump({"models": list(models), "ts": time.time(), "credential": _cache_key(api_key), "items": _catalog_metadata(items)}, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
     except Exception as exc:  # pragma: no cover - disk/permission edge
         logger.debug("Bonzai: could not persist offline model cache: %s", exc)
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
-def _load_offline_models():
+def _load_offline_models(*, api_key: str):
     """Return the last successfully fetched list, or None.
 
     Preferred over a hardcoded ``fallback_models`` tuple: the file is written
@@ -101,9 +117,11 @@ def _load_offline_models():
     """
     try:
         data = json.loads(_offline_cache_path().read_text())
+        if data.get("credential") != _cache_key(api_key):
+            return None
         models = data.get("models")
         if isinstance(models, list) and models:
-            return [m for m in models if isinstance(m, str)]
+            return [m for m in models if _valid_model_id(m)]
     except Exception:
         return None
     return None
@@ -186,46 +204,56 @@ def _claude_identity(m: str):
     return None, None
 
 
+def _numeric_version(value: str) -> tuple[int, int]:
+    parts = value.split(".")
+    return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+
+
 def _tier1_family(m: str):
     """Return a versioned family key for models eligible in the compact picker."""
     key, ver = _claude_identity(m)
     if key:
         return "-".join(key.split("-")[:2]), ver  # claude-opus / -sonnet / -haiku
     if re.match(r"^gpt-6(?:\.\d+)?$", m):
-        return "gpt-6", (float(m.split("-")[1]),)
+        return "gpt-6", _numeric_version(m.split("-")[1])
     # Keep named GPT-6 tracks independent: Luna and Sol may publish on
     # different version cadences, so rank versions within each track.
     g = re.match(r"^gpt-(6(?:\.\d+)?)-([a-z][a-z0-9-]*)$", m)
     if g and not _LIGHTWEIGHT_SUFFIX.search(m):
-        return f"gpt-6-{g.group(2)}", (float(g.group(1)),)
+        return f"gpt-6-{g.group(2)}", _numeric_version(g.group(1))
     if re.match(r"^gpt-5(?:\.\d+)?$", m):
-        return "gpt-5", (float(m.split("-")[1]),)
+        return "gpt-5", _numeric_version(m.split("-")[1])
     # Named GPT-5 tracks follow the same per-track release ordering.
     g = re.match(r"^gpt-(5(?:\.\d+)?)-([a-z][a-z0-9-]*)$", m)
     if g and not _LIGHTWEIGHT_SUFFIX.search(m):
-        return f"gpt-5-{g.group(2)}", (float(g.group(1)),)
+        return f"gpt-5-{g.group(2)}", _numeric_version(g.group(1))
     g = re.match(r"^gpt-(4o|4\.\d+|4)-([a-z][a-z0-9-]*)$", m)
     if g and not _LIGHTWEIGHT_SUFFIX.search(m):
-        version = 4.0 if g.group(1) in {"4", "4o"} else float(g.group(1))
-        return "gpt-4", (version,)
+        version = (4, 0) if g.group(1) in {"4", "4o"} else _numeric_version(g.group(1))
+        return "gpt-4", version
     if re.match(r"^gpt-4o$", m):
-        return "gpt-4", (4.0,)
+        return "gpt-4", (4, 0)
     if re.match(r"^gpt-4(?:\.\d+)?$", m):
-        return "gpt-4", (float(m.split("-")[1]),)
+        return "gpt-4", _numeric_version(m.split("-")[1])
     if m == "gpt-4o-mini":
         return None, None
     if m.startswith("o"):
         return None, None
     g = re.match(r"^gemini-(\d+(?:\.\d+)?)-(pro|flash)$", m)
     if g:
-        return f"gemini-{g.group(2)}", (float(g.group(1)),)
+        return f"gemini-{g.group(2)}", _numeric_version(g.group(1))
     if re.match(r"^glm-\d+(?:\.\d+)?$", m):
-        return "glm", (float(m.split("-")[1]),)
+        return "glm", _numeric_version(m.split("-")[1])
     if m.startswith("codestral"):
         return "mistral-codestral", (0,)
     if m.startswith("devstral"):
         return "mistral-devstral", (0,)
     return None, None
+
+
+def _valid_model_id(value) -> bool:
+    """Accept API identifiers as-is; never repair malformed catalog values."""
+    return isinstance(value, str) and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{0,255}", value))
 
 
 def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
@@ -235,7 +263,11 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
     # 1. Drop pure duplicates and non-chat models; dedupe Claude naming schemes.
     seen_claude: dict = {}
     kept: list[str] = []
+    seen_ids: set[str] = set()
     for m in raw_models:
+        if not _valid_model_id(m) or m in seen_ids:
+            continue
+        seen_ids.add(m)
         if _DUPLICATE.search(m) or _NON_CHAT.search(m):
             continue
         key, _ = _claude_identity(m)
@@ -283,16 +315,16 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
         for model in (buckets_by_track[family][0] if buckets_by_track[family] else [])
     ]
     gpt_families = [family for family in _FAMILY_ORDER if family.startswith("gpt-")]
-    gpt_rows: list[tuple[float, str, str]] = []
+    gpt_rows: list[tuple[tuple[int, ...], str, str]] = []
     for family in gpt_families:
         versions = sorted({version for version, _model in groups.get(family, [])}, reverse=True)
         retained_versions = set(versions[:_MAX_VERSIONS_PER_FAMILY])
         gpt_rows.extend(
-            (version[0], family, model)
+            (version, family, model)
             for version, model in groups.get(family, [])
             if version in retained_versions
         )
-    gpt_rows.sort(key=lambda row: (-row[0], row[1].casefold(), row[2].casefold()))
+    gpt_rows.sort(key=lambda row: (tuple(-part for part in row[0]), row[1].casefold(), row[2].casefold()))
     gpt_models = [model for _version, _family, model in gpt_rows]
 
     other_families = [family for family in _FAMILY_ORDER if family not in claude_families and not family.startswith("gpt-")]
@@ -307,14 +339,14 @@ def _build_smart_shortlist(raw_models: list[str]) -> list[str]:
                 claude_remaining.extend(buckets_by_track[family][release_index])
 
     family_rank = {family: index for index, family in enumerate(other_families)}
-    other_rows: list[tuple[float, int, str]] = []
+    other_rows: list[tuple[tuple[int, ...], int, str]] = []
     for family in other_families:
         model_versions = {model: version for version, model in groups[family]}
         for bucket in buckets_by_track[family]:
             for model in bucket:
-                version = model_versions[model][0]
+                version = model_versions[model]
                 other_rows.append((version, family_rank[family], model))
-    other_rows.sort(key=lambda row: (row[1], -row[0], row[2].casefold()))
+    other_rows.sort(key=lambda row: (row[1], tuple(-part for part in row[0]), row[2].casefold()))
     other_models = [model for _version, _family_rank, model in other_rows]
 
     ordered_models = claude_latest + gpt_models + claude_remaining + other_models
@@ -352,32 +384,47 @@ def _max_tokens_key(model: str | None) -> str:
     return m
 
 
-def _update_model_capabilities(items: list[dict]) -> None:
-    """Import trustworthy limits from Bonzai's catalog into Hermes metadata.
+def _catalog_metadata(items) -> list[dict]:
+    """Whitelist validated catalog fields before persisting or applying them."""
+    result = []
+    if not isinstance(items, list):
+        return result
+    for item in items:
+        if not isinstance(item, dict) or not _valid_model_id(item.get("id")) or item.get("mode") != "chat":
+            continue
+        entry = {"id": item["id"], "mode": "chat"}
+        for field in ("max_input_tokens", "max_output_tokens"):
+            value = item.get(field)
+            if type(value) is int and value > 0:
+                entry[field] = value
+        result.append(entry)
+    return result
 
-    Bonzai exposes ``max_input_tokens`` and ``max_output_tokens`` on current
-    chat entries. Keeping these values on the registered profile lets Hermes
-    use them for startup validation and request sizing instead of applying
-    generic family guesses. Entries without metadata are left untouched.
+
+def _catalog_capabilities(items: list[dict]) -> dict[str, dict]:
+    """Build a credential-local snapshot without mutating the SDK singleton.
+
+    Hermes capability/output hooks receive only a model, not its credential.
+    Keep credential-dependent catalog limits in their cache snapshot; exporting
+    them globally would affect concurrent keys and profiles. Only explicitly
+    declared provider-wide corrections are safe on model_capabilities.
     """
     capabilities: dict[str, dict] = {}
-    for item in items:
-        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-            continue
-        if item.get("mode") != "chat":
-            continue
+    for item in _catalog_metadata(items):
         model_id = item["id"]
         entry: dict = {}
         context = item.get("max_input_tokens")
         output = item.get("max_output_tokens")
-        if isinstance(context, int) and context > 0:
+        if type(context) is int and context > 0:
             entry["context_window"] = context
-        if isinstance(output, int) and output > 0:
+        if type(output) is int and output > 0:
             entry["max_output_tokens"] = output
+        if model_id == "gemini-3.7-flash":
+            # Provider-scoped verified correction: the gateway underreports this.
+            entry["context_window"] = max(entry.get("context_window", 0), 1_048_576)
         if entry:
             capabilities[model_id] = entry
-    if capabilities:
-        bonzai.model_capabilities.update(capabilities)
+    return capabilities
 
 
 def _classify_bonzai_error(
@@ -421,6 +468,33 @@ def _classify_bonzai_error(
     return None
 
 
+def _open_catalog(request, *, timeout, ssl_context):
+    """Use Hermes' redirect policy, failing closed on legacy builds."""
+    try:
+        from hermes_cli.urllib_security import open_credentialed_url
+    except ImportError:
+        from urllib.error import HTTPError
+        from urllib.parse import urlsplit, urljoin
+
+        def origin(url):
+            parsed = urlsplit(url)
+            return parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port or (443 if parsed.scheme == "https" else 80)
+
+        initial_origin = origin(request.full_url)
+
+        class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                if origin(urljoin(req.full_url, newurl)) != initial_origin:
+                    raise HTTPError(newurl, code, "Bonzai cross-origin redirect rejected", headers, fp)
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=ssl_context), SameOriginRedirect(),
+        )
+        return opener.open(request, timeout=timeout)
+    return open_credentialed_url(request, timeout=timeout, ssl_context=ssl_context)
+
+
 class BonzaiProfile(ProviderProfile):
     """Bonzai (api-v2.bonzai.iodigital.com) provider profile."""
     def get_max_tokens(self, model: str | None) -> int | None:
@@ -437,8 +511,16 @@ class BonzaiProfile(ProviderProfile):
         likely to support MORE output than less, and capping it on a guess
         would silently truncate long writes.
         """
-        cap = _MODEL_MAX_TOKENS.get(_max_tokens_key(model))
-        return cap if cap is not None else self.default_max_tokens
+        key = _max_tokens_key(model)
+        limits = [self.default_max_tokens, _MODEL_MAX_TOKENS.get(key)]
+        # Only declared provider-wide metadata is safe: the SDK supplies no
+        # session credential here, so never select a last-fetched cache or env key.
+        limits.append(self.model_capabilities.get(key, {}).get("max_output_tokens"))
+        return min(value for value in limits if type(value) is int and value > 0)
+
+    def invalidate_catalog_cache(self) -> None:
+        """Honor Hermes' explicit refresh while retaining offline resilience."""
+        _CACHE.clear()
 
     def fetch_models(
         self,
@@ -490,24 +572,23 @@ class BonzaiProfile(ProviderProfile):
             ctx = ssl.create_default_context()
 
         try:
-            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            with _open_catalog(req, timeout=timeout, ssl_context=ctx) as resp:
                 data = json.loads(resp.read().decode())
 
             items = data if isinstance(data, list) else data.get("data", [])
-            raw_models = [m["id"] for m in items if isinstance(m, dict) and "id" in m]
+            raw_models = [m["id"] for m in items if isinstance(m, dict) and _valid_model_id(m.get("id"))]
 
             if raw_models:
                 shortlist = _build_smart_shortlist(raw_models)
-                _update_model_capabilities(items)
-                _CACHE[cache_key] = {"models": shortlist, "ts": now}
-                _store_offline_models(shortlist)
+                _CACHE[cache_key] = {"models": shortlist, "ts": now, "items": _catalog_metadata(items)}
+                _store_offline_models(shortlist, api_key=api_key, items=items)
                 logger.info("Bonzai: smart shortlist built with %d models", len(shortlist))
                 return list(shortlist)
 
         except Exception as exc:
             logger.warning("Bonzai live model fetch failed: %s", exc)
 
-        cached = _load_offline_models()
+        cached = _load_offline_models(api_key=api_key)
         if cached:
             logger.info("Bonzai: using last-known-good model list (%d models)", len(cached))
             return cached

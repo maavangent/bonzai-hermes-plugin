@@ -1,5 +1,26 @@
 # Changelog
 
+## Provider 2.11.0 / Key Manager 2.1.0 (2026-11-17)
+
+- Fresh installations default to Luna 6.0 (`gpt-6-luna`); existing model selections remain unchanged.
+- Key switches preserve the current chat model (configured Hermes default when absent) using stable named client endpoints rather than changing legacy aliases. Explicit default selections display `Selected · iO (Default)` consistently with client selections; neither label claims verified billing identity.
+
+- Client-key switching uses the SDK's `session.model` adapter rather than the retired `config.set model` shape. Tests reproduce the canonical gateway's `use_session_mutation_model` refusal.
+
+- Provider releases sort as integer tuples, including versions such as 6.10.
+- Refresh invalidates plugin-local caches; offline catalog and metadata are written atomically and bound to the profile and credential fingerprint. Old unbound caches require one successful online fetch.
+- Credential-specific catalog snapshots no longer mutate singleton provider capabilities or leak limits to another profile/key. Request sizing uses declared provider-wide limits and measured static exceptions; dynamic per-credential sizing awaits a credential-aware SDK hook. The provider-scoped Gemini context correction survives catalog updates. Credential-bearing catalog/key-test requests use safe redirect handling.
+- Installer preflights configuration before file removal, discovers `.venv`, preserves another provider's model selection, hides key input, and requires a different replacement default key before moving the old key to a client.
+- Health checks reject missing keys/entrypoints and stale manifests; launchers preserve installer exit status.
+- Key Manager mutations are serialized across read/modify/write, verify alias persistence, roll back a new secret when alias saving fails, reject orphan-secret collisions, and retain distinct legacy keys with identical labels.
+- Removing a key selected in a chat is refused. Selecting an unknown or unconfigured client alias is refused. The backend never uses another profile's ambient default key.
+- Test dependencies include the current Hermes config-writer dependencies; provider SDK stubs are scoped to each import instead of leaking into other test files.
+- Desktop actions check the owning profile at invocation, Save & Use keeps the original chat identity, and key inputs clear on profile change. Rename/Test controls and a real palette-open action reuse the SDK. Stateful React/DOM tests cover rerenders and event cleanup.
+- Session status no longer invents an active billing identity from an advisory selection. Owner-routed session information reports inactive/unknown/unverified status; the core API lacks authoritative credential identity.
+- Key switches are idle-only. Unexpected deferred selections remain explicitly pending with alias-only local persistence and require idle reselection; stored-session mismatches are rejected. JavaScript behavior dependencies are pinned for reproducible runs.
+
+Configured Hermes fallback chains are not a strict credential pin; the plugin does not change Hermes core or guarantee billing isolation across fallback providers. Verification: 222 tests passed, 1 skipped; live switching confirmed by Maarten in a short session. Windows remains statically tested, not live-tested.
+
 ## Bonzai provider 2.10.0
 
 The latest released Bonzai provider is **2.10.0**. Provider and installer changes are included here. The Key Manager backend/dashboard remain at **2.0.0**; no Key Manager UI changes are part of this release. Hermes Desktop core model-picker changes are separate and not included here.

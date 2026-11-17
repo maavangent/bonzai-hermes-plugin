@@ -32,7 +32,7 @@ def test_provider_manifest_declares_v2_metadata():
     assert "api_version: 1" in manifest
     assert "license: MIT" in manifest
     assert "homepage: https://github.com/maavangent/bonzai-hermes-plugin" in manifest
-    assert yaml.safe_load(MANIFEST.read_text())["version"] == "2.10.0"
+    assert yaml.safe_load(MANIFEST.read_text())["version"] == "2.11.0"
 
 
 def load_installer(home: Path):
@@ -51,7 +51,40 @@ def load_installer(home: Path):
     module.PROVIDERS_FILE = home / "hermes-agent" / "hermes_cli" / "providers.py"
     module.CACHE_FILE = home / "provider_models_cache.json"
     module.CONFIG_FILE = home / "config.yaml"
+    module.ENV_FILE = home / ".env"
     return module
+
+
+@pytest.mark.parametrize("command", ["do_install", "do_uninstall"])
+@pytest.mark.parametrize("invalid_config", [
+    "[not, a, mapping]", "plugins: wrong", "plugins:\n  enabled: wrong",
+    "plugins:\n  enabled: [{}]", "model: []", "model_aliases: []",
+])
+def test_config_preflight_preserves_existing_files(env, command, invalid_config):
+    _home, installer, providers = env
+    installer.CONFIG_FILE.write_text(invalid_config)
+    installer.PLUGIN_DIR.mkdir(parents=True)
+    marker = installer.PLUGIN_DIR / "existing.txt"
+    marker.write_text("keep me")
+    before = providers.read_bytes()
+
+    with pytest.raises(RuntimeError, match="config|mapping|lists|strings"):
+        getattr(installer, command)()
+
+    assert marker.read_text() == "keep me"
+    assert installer.CONFIG_FILE.read_text() == invalid_config
+    assert providers.read_bytes() == before
+
+
+def test_install_preflights_missing_yaml_before_replacing_files(env, monkeypatch):
+    _home, installer, _providers = env
+    installer.PLUGIN_DIR.mkdir(parents=True)
+    marker = installer.PLUGIN_DIR / "existing.txt"
+    marker.write_text("keep me")
+    monkeypatch.setattr(installer, "yaml", None)
+    with pytest.raises(RuntimeError, match="PyYAML"):
+        installer.do_install()
+    assert marker.read_text() == "keep me"
 
 
 def test_named_profile_resolves_shared_hermes_source_root(tmp_path):
@@ -175,6 +208,54 @@ def resolve_provider_full(name):
     assert installer.overlay_missing() is False
 
 
+def test_native_resolution_detection_ignores_formatting(env):
+    _home, installer, providers = env
+    providers.write_text('''
+def _plugin_profile_pdef(name):
+    return get_provider_profile(name)
+def resolve_provider_full(name):
+    resolved = _plugin_profile_pdef(name)
+    if resolved is not None:
+        return resolved
+    return None
+''')
+    before = providers.read_bytes()
+    assert installer._native_provider_resolution_supported()
+    installer.add_overlay()
+    assert providers.read_bytes() == before
+
+
+def test_native_resolution_detection_does_not_trust_comments(env):
+    _home, installer, providers = env
+    providers.write_text(PROVIDERS_STUB + '''
+# def resolve_provider_full(
+# _plugin_profile_pdef
+# return pdef if pdef is not None and pdef.id != "custom" else None
+''')
+    assert not installer._native_provider_resolution_supported()
+
+
+def test_providers_source_discovered_from_current_runtime(tmp_path, monkeypatch):
+    installer = load_installer(tmp_path)
+    runtime = tmp_path / "runtime"
+    source = runtime / "hermes_cli" / "providers.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("# source only")
+    monkeypatch.setattr(installer.sys, "prefix", str(runtime / ".venv"))
+    assert installer.resolve_providers_file(tmp_path) == source
+
+
+@pytest.mark.parametrize("venv", [".venv", "venv"])
+@pytest.mark.parametrize("executable", ["bin/python", "Scripts/python.exe"])
+def test_find_hermes_python_supports_current_venv_names(tmp_path, monkeypatch, venv, executable):
+    installer = load_installer(tmp_path)
+    monkeypatch.setattr(installer.Path, "home", lambda: tmp_path)
+    candidate = tmp_path / "hermes-agent" / venv / executable
+    candidate.parent.mkdir(parents=True)
+    candidate.touch()
+    assert installer._find_hermes_python() == candidate
+
+
 def test_overlay_is_reported_missing_when_a_hermes_update_rewrote_providers_py(env):
     _home, installer, providers = env
     installer.add_overlay()
@@ -245,17 +326,8 @@ def test_uninstall_removes_both_key_manager_installations_and_only_its_enabled_k
 
 def test_check_requires_backend_desktop_file_and_enabled_state(env):
     home, installer, _providers = env
-    installer.PLUGIN_DIR.mkdir(parents=True)
-    installer.add_overlay()
-    installer.KEY_MANAGER_DIR.mkdir(parents=True)
-    (installer.KEY_MANAGER_DIR / "plugin.yaml").write_text(
-        "name: bonzai-key-manager\nkind: backend\n"
-    )
-    installer.DESKTOP_PLUGIN_FILE.parent.mkdir(parents=True)
-    installer.DESKTOP_PLUGIN_FILE.write_bytes(installer.SOURCE_DESKTOP_PLUGIN.read_bytes())
-    (home / "config.yaml").write_text(yaml.safe_dump({
-        "plugins": {"enabled": ["bonzai-key-manager"]}
-    }))
+    installer.configure_bonzai_defaults("synthetic-value")
+    installer.do_install()
 
     assert installer.do_check() == 0
 
@@ -263,19 +335,14 @@ def test_check_requires_backend_desktop_file_and_enabled_state(env):
     assert installer.do_check() == 1
 
 
-def test_check_rejects_key_manager_with_wrong_manifest_kind(env):
-    home, installer, _providers = env
-    installer.PLUGIN_DIR.mkdir(parents=True)
-    installer.add_overlay()
-    installer.KEY_MANAGER_DIR.mkdir(parents=True)
-    installer.DESKTOP_PLUGIN_FILE.parent.mkdir(parents=True)
-    installer.DESKTOP_PLUGIN_FILE.write_text("installed")
+def test_check_rejects_key_manager_with_wrong_manifest_kind(env, capsys):
+    _home, installer, _providers = env
+    installer.configure_bonzai_defaults("synthetic-value")
+    installer.do_install()
+    assert installer.do_check() == 0
     (installer.KEY_MANAGER_DIR / "plugin.yaml").write_text("name: bonzai-key-manager\nkind: standalone\n")
-    (home / "config.yaml").write_text(yaml.safe_dump({
-        "plugins": {"enabled": ["bonzai-key-manager"]}
-    }))
-
     assert installer.do_check() == 1
+    assert "kind: backend" in capsys.readouterr().out
 
 
 def test_check_rejects_key_manager_when_explicitly_disabled(env):
@@ -382,9 +449,31 @@ def test_configure_bonzai_defaults(tmp_path):
 
     config = installer._load_config()
     assert config["model"]["provider"] == "bonzai"
-    assert config["model"]["default"] == "gemini-3.7-flash"
+    assert config["model"]["default"] == "gpt-6-luna"
     assert "io" in config["model_aliases"]
     assert config["model_aliases"]["io"]["provider"] == "bonzai"
+
+
+@pytest.mark.parametrize("model", [
+    {"provider": "openai", "default": "gpt-model", "base_url": "https://other.example", "api_key": "${OTHER}"},
+    {"default": "other-model"}, "other-model",
+])
+def test_install_preserves_existing_non_bonzai_model(env, model, capsys):
+    _home, installer, _providers = env
+    installer.CONFIG_FILE.write_text(yaml.safe_dump({"model": model}))
+    installer.do_install()
+    config = installer._load_config()
+    assert config["model"] == model
+    assert config["model_aliases"]["io"]["provider"] == "bonzai"
+    assert "as your default model" not in capsys.readouterr().out
+
+
+def test_configure_defaults_preflights_before_writing_secret(tmp_path):
+    installer = load_installer(tmp_path)
+    installer.CONFIG_FILE.write_text("model_aliases: []")
+    with pytest.raises(RuntimeError, match="mapping"):
+        installer.configure_bonzai_defaults(api_key="synthetic-value")
+    assert not installer.ENV_FILE.exists()
 
 
 def test_add_client_alias_refuses_existing_alias_before_writing_secret(tmp_path):
@@ -403,6 +492,40 @@ def test_add_client_alias_refuses_existing_alias_before_writing_secret(tmp_path)
     assert installer._load_config()["model_aliases"]["landal"]["model"] == "keep-me"
 
 
+@pytest.mark.parametrize("assignment", ["BONZAI_CLIENT_API_KEY=orphan", "export BONZAI_CLIENT_API_KEY=orphan", "BONZAI_CLIENT_API_KEY="])
+def test_alias_rejects_existing_orphan_env_assignment(tmp_path, assignment):
+    installer = load_installer(tmp_path)
+    installer.ENV_FILE.write_text("# keep\n" + assignment + "\n")
+    before = installer.ENV_FILE.read_bytes()
+    with pytest.raises(ValueError, match="already exists"):
+        installer.add_client_alias("Client", "replacement-synthetic")
+    assert installer.ENV_FILE.read_bytes() == before
+    assert not installer.CONFIG_FILE.exists()
+
+
+@pytest.mark.parametrize("initial_files", [False, True])
+@pytest.mark.parametrize("failure", ["before_save", "after_save"])
+def test_alias_save_failure_rolls_back_exact_files(tmp_path, monkeypatch, initial_files, failure):
+    installer = load_installer(tmp_path)
+    if initial_files:
+        installer.ENV_FILE.write_bytes(b'# env note\r\nOTHER=value\r\n')
+        installer.CONFIG_FILE.write_bytes(b'# config note\nmodel: other\n')
+        installer.ENV_FILE.chmod(0o640)
+        installer.CONFIG_FILE.chmod(0o600)
+    paths = (installer.ENV_FILE, installer.CONFIG_FILE)
+    before = [(p.read_bytes(), p.stat().st_mode & 0o777) if p.exists() else None for p in paths]
+    original = installer._save_config
+    def fail_save(config):
+        if failure == "after_save":
+            original(config)
+        raise OSError("synthetic config failure")
+    monkeypatch.setattr(installer, "_save_config", fail_save)
+    with pytest.raises(OSError, match="synthetic config failure"):
+        installer.add_client_alias("Client", "synthetic-client")
+    after = [(p.read_bytes(), p.stat().st_mode & 0o777) if p.exists() else None for p in paths]
+    assert after == before
+
+
 def test_add_client_alias(tmp_path):
     installer = load_installer(tmp_path)
     installer.CONFIG_FILE = tmp_path / "config.yaml"
@@ -418,6 +541,96 @@ def test_add_client_alias(tmp_path):
     assert alias["provider"] == "custom"
     assert alias["base_url"] == "https://api-v2.bonzai.iodigital.com"
     assert alias["key_env"] == "BONZAI_LANDAL_API_KEY"
+
+
+@pytest.mark.parametrize("mode", ["fresh", "replace", "alias"])
+def test_secret_prompts_use_hidden_input(tmp_path, monkeypatch, mode):
+    installer = load_installer(tmp_path)
+    if mode == "replace":
+        installer.set_env_var("BONZAI_API_KEY", "old-synthetic")
+    responses = iter(["3"] if mode == "replace" else ["Client", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(responses))
+    import getpass
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: "new-synthetic")
+    if mode == "alias":
+        installer.interactive_add_alias()
+        assert installer.get_env_var("BONZAI_CLIENT_API_KEY") == "new-synthetic"
+    else:
+        assert installer.prompt_api_key_if_needed() == "new-synthetic"
+
+
+@pytest.mark.parametrize("replacement", ["", "new-synthetic", None])
+def test_move_to_client_requires_replacement_before_moving(tmp_path, monkeypatch, replacement):
+    installer = load_installer(tmp_path)
+    installer.set_env_var("BONZAI_API_KEY", "client-synthetic")
+    responses = iter(["2", "Client", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(responses))
+    import getpass
+    def hidden(prompt):
+        if replacement is None:
+            raise EOFError
+        return replacement
+    monkeypatch.setattr(getpass, "getpass", hidden)
+    result = installer.prompt_api_key_if_needed()
+    if replacement:
+        installer.configure_bonzai_defaults(result)
+        assert installer.get_env_var("BONZAI_CLIENT_API_KEY") == "client-synthetic"
+        assert installer.get_env_var("BONZAI_API_KEY") == replacement
+    else:
+        assert result is None
+        assert not installer.CONFIG_FILE.exists()
+        assert installer.get_env_var("BONZAI_CLIENT_API_KEY") is None
+        assert installer.get_env_var("BONZAI_API_KEY") == "client-synthetic"
+
+
+@pytest.mark.parametrize("failure", ["alias_save", "default_before_write", "default_after_write"])
+def test_move_write_failure_restores_exact_env_and_config(tmp_path, monkeypatch, failure):
+    installer = load_installer(tmp_path)
+    installer.ENV_FILE.write_bytes(b'# note\r\nBONZAI_API_KEY=client-synthetic\r\nOTHER=keep\r\n')
+    installer.ENV_FILE.chmod(0o640)
+    installer.CONFIG_FILE.write_bytes(b'# notes\nmodel: other-model\n')
+    paths = (installer.ENV_FILE, installer.CONFIG_FILE)
+    before = [(p.read_bytes(), p.stat().st_mode & 0o777) for p in paths]
+    responses = iter(["2", "Client", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(responses))
+    monkeypatch.setattr(installer.getpass, "getpass", lambda prompt: "replacement-synthetic")
+    save = installer._save_config
+    write = installer.set_env_var
+    def failing_save(config):
+        save(config)
+        if failure == "alias_save":
+            raise OSError("synthetic move failure")
+    def failing_write(name, value):
+        if name == "BONZAI_API_KEY" and failure == "default_before_write":
+            raise OSError("synthetic move failure")
+        write(name, value)
+        if name == "BONZAI_API_KEY" and failure == "default_after_write":
+            raise OSError("synthetic move failure")
+    monkeypatch.setattr(installer, "_save_config", failing_save)
+    monkeypatch.setattr(installer, "set_env_var", failing_write)
+    with pytest.raises(OSError, match="synthetic move failure"):
+        installer.prompt_api_key_if_needed()
+    assert [(p.read_bytes(), p.stat().st_mode & 0o777) for p in paths] == before
+
+
+def test_mac_launcher_prefers_dotvenv_and_preserves_failure_status(tmp_path):
+    import shutil
+    launcher = tmp_path / "Install.command"
+    shutil.copy2(INSTALLER.parent / "Install-Bonzai-Model-Provider.command", launcher)
+    runtime = tmp_path / ".hermes" / "hermes-agent" / ".venv" / "bin" / "python3"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text('#!/bin/sh\nprintf "selected-dotvenv\\n"\nexit 7\n')
+    runtime.chmod(0o755)
+    environment = dict(os.environ, HOME=str(tmp_path), HERMES_HOME=str(tmp_path / ".hermes"))
+    result = subprocess.run(["bash", str(launcher)], env=environment, input="x", capture_output=True, text=True)
+    assert "selected-dotvenv" in result.stdout
+    assert result.returncode == 7
+
+
+def test_windows_launcher_detects_dotvenv_and_propagates_exit_code():
+    script = (INSTALLER.parent / "Install-Bonzai-Model-Provider.cmd").read_text()
+    assert r"hermes-agent\.venv\Scripts\python.exe" in script
+    assert "exit /b" in script.lower()
 
 
 def test_one_click_launchers_exist():
@@ -465,7 +678,7 @@ def test_config_edits_keep_user_comments_when_hermes_is_available(tmp_path):
     text = installer.CONFIG_FILE.read_text()
     assert "# my notes" in text
     assert "# keep" in text
-    assert installer._load_config()["model"]["provider"] == "bonzai"
+    assert installer._load_config()["model"]["provider"] == "openrouter"
 
 
 def test_config_is_never_rewritten_without_a_yaml_parser(tmp_path, monkeypatch):
@@ -482,6 +695,7 @@ def test_config_is_never_rewritten_without_a_yaml_parser(tmp_path, monkeypatch):
 
 def test_check_flags_client_keys_left_in_the_credential_pool(env):
     home, installer, _providers = env
+    installer.configure_bonzai_defaults("synthetic-value")
     installer.do_install()
     assert installer.do_check() == 0
 
@@ -492,6 +706,50 @@ def test_check_flags_client_keys_left_in_the_credential_pool(env):
 
     assert installer.pooled_client_keys() == 1
     assert installer.do_check() == 1
+
+
+@pytest.mark.parametrize("missing", [
+    ".env", "plugins/model-providers/bonzai/__init__.py",
+    "plugins/model-providers/bonzai/plugin.yaml",
+    "plugins/bonzai-key-manager/dashboard/plugin_api.py",
+    "plugins/bonzai-key-manager/plugin.yaml",
+])
+def test_health_check_rejects_missing_required_artifacts(env, missing, capsys):
+    home, installer, _providers = env
+    installer.configure_bonzai_defaults("synthetic-value")
+    installer.do_install()
+    assert installer.do_check() == 0
+    capsys.readouterr()
+    (home / missing).unlink()
+    assert installer.do_check() == 1
+    assert "everything is healthy" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("kind", ["backend", "standalone"])
+def test_health_check_rejects_wrong_provider_manifest_kind(env, kind):
+    _home, installer, _providers = env
+    installer.configure_bonzai_defaults("synthetic-value")
+    installer.do_install()
+    (installer.PLUGIN_DIR / "plugin.yaml").write_text(f"name: bonzai\nkind: {kind}\n")
+    assert installer.do_check() == 1
+
+
+def test_health_check_detects_stale_manifest(env):
+    _home, installer, _providers = env
+    installer.configure_bonzai_defaults("synthetic-value")
+    installer.do_install()
+    manifest = installer.PLUGIN_DIR / "plugin.yaml"
+    manifest.write_text(manifest.read_text() + "\n# stale copy\n")
+    assert installer.do_check() == 1
+
+
+def test_health_check_reports_invalid_config_without_traceback(env, capsys):
+    _home, installer, _providers = env
+    installer.configure_bonzai_defaults("synthetic-value")
+    installer.do_install()
+    installer.CONFIG_FILE.write_text("plugins: []")
+    assert installer.do_check() == 1
+    assert "mapping" in capsys.readouterr().out
 
 
 def test_check_flags_a_stale_installed_copy(env):

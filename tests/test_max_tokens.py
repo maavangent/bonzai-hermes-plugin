@@ -1,35 +1,8 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
-import types
-from pathlib import Path
+from provider_helper import load_plugin
 
-
-providers = types.ModuleType("providers")
-providers.register_provider = lambda _profile: None  # type: ignore[attr-defined]
-base = types.ModuleType("providers.base")
-
-
-class ProviderProfile:
-    default_max_tokens = None
-
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
-
-    def get_max_tokens(self, model):
-        return self.default_max_tokens
-
-
-base.ProviderProfile = ProviderProfile  # type: ignore[attr-defined]
-sys.modules["providers"] = providers
-sys.modules["providers.base"] = base
-
-PLUGIN = Path(__file__).parents[1] / "bonzai" / "__init__.py"
-spec = importlib.util.spec_from_file_location("bonzai_maxtokens_test", PLUGIN)
-assert spec and spec.loader
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+module = load_plugin()
 
 
 def test_models_with_catalog_reported_lower_ceiling_keep_their_cap():
@@ -85,15 +58,51 @@ def test_unrelated_bonzai_error_is_left_to_hermes():
     assert module._classify_bonzai_error(RuntimeError("bad request"), status_code=400) is None
 
 
+def test_catalog_preserves_validated_context_correction():
+    fresh = load_plugin()
+    capabilities = fresh._catalog_capabilities([
+        {"id": "gemini-3.7-flash", "mode": "chat", "max_input_tokens": 8192, "max_output_tokens": 8192},
+    ])
+    assert capabilities["gemini-3.7-flash"] == {
+        "context_window": 1_048_576, "max_output_tokens": 8192,
+    }
+
+
+def test_credential_catalog_limits_stay_local_to_the_snapshot():
+    fresh = load_plugin()
+    capabilities = fresh._catalog_capabilities([
+        {"id": "gpt-6.1-sol", "mode": "chat", "max_output_tokens": 4096},
+        {"id": "claude-opus-5", "mode": "chat", "max_output_tokens": 128_000},
+        {"id": "gpt-4o", "mode": "chat", "max_output_tokens": 8192},
+    ])
+    assert capabilities["gpt-6.1-sol"]["max_output_tokens"] == 4096
+    assert fresh.bonzai.get_max_tokens("gpt-6.1-sol") == 32768
+    assert fresh.bonzai.get_max_tokens("claude-opus-5") == 32768
+    assert capabilities["gpt-4o"]["max_output_tokens"] == 8192
+    assert fresh.bonzai.get_max_tokens("gpt-4o") == 16384
+
+
+def test_invalid_catalog_capabilities_are_not_imported():
+    fresh = load_plugin()
+    capabilities = fresh._catalog_capabilities([
+        {"id": "gpt-6.1-sol", "mode": "chat", "max_input_tokens": True, "max_output_tokens": True},
+        {"id": "bad id", "mode": "chat", "max_input_tokens": 64000},
+        {"id": "gpt-6.2-sol", "mode": "chat", "max_input_tokens": -1, "max_output_tokens": "8192"},
+    ])
+    assert "gpt-6.1-sol" not in capabilities
+    assert "bad id" not in capabilities
+    assert "gpt-6.2-sol" not in capabilities
+
+
 def test_capability_probe_marks_provider_vision_support():
     assert module.bonzai.supports_vision is True
     assert module.bonzai.supports_vision_tool_messages is True
-    module._update_model_capabilities([
+    capabilities = module._catalog_capabilities([
         {"id": "claude-sonnet-5", "mode": "chat", "max_input_tokens": 1_000_000, "max_output_tokens": 128_000},
         {"id": "image-model", "mode": "image_generation", "max_input_tokens": 32_000},
     ])
-    assert module.bonzai.model_capabilities["claude-sonnet-5"] == {
+    assert capabilities["claude-sonnet-5"] == {
         "context_window": 1_000_000,
         "max_output_tokens": 128_000,
     }
-    assert "image-model" not in module.bonzai.model_capabilities
+    assert "image-model" not in capabilities

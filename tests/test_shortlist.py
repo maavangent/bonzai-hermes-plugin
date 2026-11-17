@@ -1,31 +1,9 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
-import types
-from pathlib import Path
+from provider_helper import load_plugin
 
+module = load_plugin()
 
-# Load the standalone plugin without requiring a full Hermes install.
-providers = types.ModuleType("providers")
-providers.register_provider = lambda _profile: None  # type: ignore[attr-defined]
-base = types.ModuleType("providers.base")
-
-
-class ProviderProfile:
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
-
-
-base.ProviderProfile = ProviderProfile  # type: ignore[attr-defined]
-sys.modules.setdefault("providers", providers)
-sys.modules.setdefault("providers.base", base)
-
-PLUGIN = Path(__file__).parents[1] / "bonzai" / "__init__.py"
-spec = importlib.util.spec_from_file_location("bonzai_plugin_test", PLUGIN)
-assert spec and spec.loader
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
 
 def leading(models, count):
     """Return the expected model-ID prefix from the flat provider list."""
@@ -176,10 +154,10 @@ def test_bonzai_aliases_lead_in_curated_order():
     ]
 
 def test_gpt_tracks_are_sorted_by_their_own_numeric_versions():
-    assert module._tier1_family("gpt-6-luna") == ("gpt-6-luna", (6.0,))
-    assert module._tier1_family("gpt-6-sol") == ("gpt-6-sol", (6.0,))
-    assert module._tier1_family("gpt-6.1-sol") == ("gpt-6-sol", (6.1,))
-    assert module._tier1_family("gpt-5.6-luna") == ("gpt-5-luna", (5.6,))
+    assert module._tier1_family("gpt-6-luna") == ("gpt-6-luna", (6, 0))
+    assert module._tier1_family("gpt-6-sol") == ("gpt-6-sol", (6, 0))
+    assert module._tier1_family("gpt-6.1-sol") == ("gpt-6-sol", (6, 1))
+    assert module._tier1_family("gpt-5.6-luna") == ("gpt-5-luna", (5, 6))
 
     gpt6 = module._build_smart_shortlist([
         "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol",
@@ -269,6 +247,22 @@ def test_every_visible_entry_is_a_real_api_model_id():
 
     assert shown == raw
     assert len(shown) == len(set(shown))
+
+
+def test_multi_digit_minor_versions_sort_as_integer_releases():
+    assert module._build_smart_shortlist([
+        "gpt-6.9-sol", "gpt-6.10-sol", "gpt-6.8-sol", "gpt-6.1-sol",
+        "gemini-3.9-flash", "gemini-3.10-flash", "glm-4.9", "glm-4.10",
+    ]) == [
+        "gpt-6.10-sol", "gpt-6.9-sol", "gpt-6.8-sol",
+        "gemini-3.10-flash", "gemini-3.9-flash", "glm-4.10", "glm-4.9",
+    ]
+
+
+def test_shortlist_rejects_invalid_ids_and_collapses_exact_duplicates():
+    assert module._build_smart_shortlist([
+        None, 42, {}, "", " gpt-6.1-sol", "gpt-6.1-sol\n", "gpt-6.1-sol", "gpt-6.1-sol",
+    ]) == ["gpt-6.1-sol"]
 
 
 def test_missing_bonzai_aliases_are_not_synthesized():

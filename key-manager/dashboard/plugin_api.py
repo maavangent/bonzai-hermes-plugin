@@ -6,8 +6,10 @@ A pooled key is a rotation candidate: when the default iO key is rate-limited
 or rejected, Hermes rotates to the next pool entry, which silently bills iO
 work to a client (and the reverse). A client key therefore lives in exactly one
 place: an ``.env`` secret plus a ``model_aliases`` entry whose ``key_env``
-points at it. Selecting a key is a per-session ``/model <alias>`` switch.
-Keys added by older versions as manual pool rows are migrated on first use.
+points at it. Desktop key switches prepare a named ``providers:`` endpoint
+and submit the current model separately via Hermes' canonical session mutation.
+Legacy aliases remain available for typed /model commands. Older manual pool
+rows are migrated on first use.
 
 Concurrency and profile boundaries matter here: session-key JSON updates use an inter-process file lock and atomic replacement. The Desktop companion routes live model changes to the focused session owner's profile, while this HTTP API deliberately serves only the currently active Hermes profile; it does not proxy requests across profiles.
 """
@@ -18,6 +20,8 @@ import os
 import re
 import ssl
 import tempfile
+import threading
+from functools import wraps
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -35,13 +39,27 @@ BONZAI_BASE_URL = "https://api-v2.bonzai.iodigital.com"
 API_KEY_ENV_VAR = "BONZAI_API_KEY"
 DEFAULT_SLUG = "io"
 DEFAULT_LABEL = "iO (Default)"
-DEFAULT_CLIENT_MODEL = "gemini-3.7-flash"
+DEFAULT_CLIENT_MODEL = "gpt-6-luna"
 # Names that would shadow the default route or read as the default key.
 RESERVED_SLUGS = frozenset({DEFAULT_SLUG, "default", "bonzai", "bonzai-api-key"})
 _SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,256}")
 
 router = APIRouter()
+
+_MUTATION_LOCK = threading.RLock()
+
+
+def _serialized_mutation(function):
+    """Serialize complete profile mutations, not just individual file writes."""
+    @wraps(function)
+    def locked(*args, **kwargs):
+        from filelock import FileLock
+        home = get_hermes_home()
+        home.mkdir(parents=True, exist_ok=True)
+        with _MUTATION_LOCK, FileLock(str(home / "bonzai_key_manager.lock")):
+            return function(*args, **kwargs)
+    return locked
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +109,7 @@ def _read_env_file() -> dict[str, str]:
 def _default_key(env: dict[str, str]) -> str:
     # Only the unnumbered default: enumerating BONZAI_API_KEY_2.. is the
     # profile-scoped read that breaks multiplexed dashboard RPCs.
-    return (env.get(API_KEY_ENV_VAR) or os.getenv(API_KEY_ENV_VAR, "")).strip()
+    return (env.get(API_KEY_ENV_VAR) or "").strip()
 
 
 def _mask(api_key: str) -> str | None:
@@ -172,6 +190,18 @@ def _store_secret(env_var: str, api_key: str) -> None:
         raise HTTPException(status_code=409, detail="This Hermes installation does not allow saving that key")
 
 
+def _save_alias_config(cfg: dict) -> None:
+    """Read back aliases so a managed-scope refusal cannot look successful."""
+    save_config(cfg)
+    if load_config().get("model_aliases", {}) != cfg.get("model_aliases", {}):
+        raise HTTPException(status_code=409, detail="This Hermes installation does not allow saving client aliases")
+
+
+def _configured_model(cfg: dict) -> str:
+    block = cfg.get("model")
+    return str(block.get("default") or "") if isinstance(block, dict) else str(block or "")
+
+
 def _alias_entry(label: str, env_var: str, model: str) -> dict:
     return {
         "model": model,
@@ -189,16 +219,26 @@ def _is_manual(source) -> bool:
 
 def _legacy_slug(row: dict, aliases: dict) -> str:
     """Alias name for a migrated pool row, never colliding with a foreign alias."""
+    row_id = str(row.get("id") or "")
+    for name, entry in aliases.items():
+        if _is_bonzai_client_alias(entry) and entry.get("bonzai_legacy_id") == row_id and row_id:
+            return name
     slug = slugify(str(row.get("label") or ""))
     suffix = slugify(str(row.get("id") or "")) or "key"
     if not slug or slug in RESERVED_SLUGS:
         slug = f"client-{suffix}"
     existing = aliases.get(slug)
     if existing is not None and not _is_bonzai_client_alias(existing):
-        slug = f"{slug}-{suffix}"
+        base = f"{slug}-{suffix}"
+        slug = base
+        index = 2
+        while slug in aliases:
+            slug = f"{base}-{index}"
+            index += 1
     return slug
 
 
+@_serialized_mutation
 def migrate_legacy_pool_entries() -> int:
     """Move manual Bonzai pool rows (Key Manager <= 1.x) into aliases.
 
@@ -219,22 +259,34 @@ def migrate_legacy_pool_entries() -> int:
         cfg = load_config()
         aliases = _aliases(cfg)
         env = _read_env_file()
+        migrated_slugs: set[str] = set()
         for row in manual:
             api_key = str(row.get("access_token") or "").strip()
             if not api_key:
                 continue
             label = str(row.get("label") or "").strip()
             slug = _legacy_slug(row, aliases)
+            if slug in migrated_slugs:
+                suffix = slugify(str(row.get("id") or "")) or "key"
+                base = f"{slug}-{suffix}"
+                slug = base
+                index = 2
+                while slug in aliases:
+                    slug = f"{base}-{index}"
+                    index += 1
+            migrated_slugs.add(slug)
             existing = aliases.get(slug)
             if _is_bonzai_client_alias(existing):
                 env_var = str(existing["key_env"]).strip()
                 existing.setdefault("label", label or slug)
             else:
                 env_var = env_var_for(slug)
-                aliases[slug] = _alias_entry(label or slug, env_var, DEFAULT_CLIENT_MODEL)
+                aliases[slug] = _alias_entry(label or slug, env_var, _configured_model(cfg) or DEFAULT_CLIENT_MODEL)
+            aliases[slug]["bonzai_legacy_id"] = str(row.get("id") or "")
             if not env.get(env_var, "").strip():
                 _store_secret(env_var, api_key)
-        save_config(cfg)
+                env[env_var] = api_key
+        _save_alias_config(cfg)
 
         pools[PROVIDER] = [row for row in rows if not (isinstance(row, dict) and _is_manual(row.get("source")))]
         _save_auth_store(store)
@@ -286,7 +338,18 @@ def key_checker(api_key: str) -> dict:
     except Exception:
         context = ssl.create_default_context()
     try:
-        with urllib.request.urlopen(request, timeout=10, context=context) as response:  # nosec B310: fixed HTTPS URL
+        try:
+            from hermes_cli.urllib_security import open_credentialed_url
+        except ImportError:
+            class NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, req, fp, code, msg, headers, newurl):
+                    raise urllib.error.HTTPError(req.full_url, code, "Redirect refused", headers, fp)
+            response_handle = urllib.request.build_opener(
+                urllib.request.HTTPSHandler(context=context), NoRedirect()
+            ).open(request, timeout=10)
+        else:
+            response_handle = open_credentialed_url(request, timeout=10, ssl_context=context)
+        with response_handle as response:
             response.read(1)
             return {"ok": True, "status": int(response.status)}
     except urllib.error.HTTPError as exc:
@@ -313,6 +376,7 @@ def list_credentials() -> dict:
 
 
 @router.post("/credentials", status_code=201)
+@_serialized_mutation
 def add_credential(request: AddCredentialRequest) -> dict:
     slug = slugify(request.label)
     if not slug:
@@ -323,9 +387,15 @@ def add_credential(request: AddCredentialRequest) -> dict:
     if slug in _aliases(cfg):
         raise HTTPException(status_code=409, detail=f"A key or model alias named “{slug}” already exists")
     env_var = env_var_for(slug)
+    if env_var in _read_env_file():
+        raise HTTPException(status_code=409, detail="A stored key already uses this client name")
     _store_secret(env_var, request.api_key)
-    _aliases(cfg)[slug] = _alias_entry(request.label, env_var, request.model or DEFAULT_CLIENT_MODEL)
-    save_config(cfg)
+    _aliases(cfg)[slug] = _alias_entry(request.label, env_var, request.model or _configured_model(cfg) or DEFAULT_CLIENT_MODEL)
+    try:
+        _save_alias_config(cfg)
+    except BaseException:
+        remove_env_value(env_var)
+        raise
     return {"credential": _public_client(slug, _aliases(cfg)[slug], _read_env_file())}
 
 
@@ -357,7 +427,49 @@ def activate_credential(slug: str) -> dict:
     return {"slug": slug, "label": str(entry.get("label") or slug)}
 
 
+class PrepareRouteRequest(_NonBlankModel):
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+@router.post("/credentials/{slug}/route")
+@_serialized_mutation
+def prepare_credential_route(slug: str, request: PrepareRouteRequest) -> dict:
+    """Prepare a named endpoint without changing any chat or legacy model alias."""
+    if not _SLUG_RE.fullmatch(slug) or len(slug) > 100:
+        raise HTTPException(status_code=422, detail="Invalid key alias")
+    cfg = load_config()
+    model = request.model or _configured_model(cfg)
+    if not model:
+        raise HTTPException(status_code=409, detail="No current or configured Hermes model")
+    # Hermes resolves direct aliases before an explicit provider. Without a
+    # raw-ID selection contract, refusing a collision is safer than silently
+    # switching model or routing to the alias's credential.
+    aliases = cfg.get("model_aliases", {})
+    if isinstance(aliases, dict) and any(str(name).casefold() == model.casefold() for name in aliases):
+        raise HTTPException(status_code=409, detail="A model alias shadows the current model ID. Rename that alias before switching keys to preserve the model.")
+    if slug == DEFAULT_SLUG:
+        if not _default_key(_read_env_file()):
+            raise HTTPException(status_code=409, detail="The default key has no stored value")
+        return {"payload": {"model": model, "provider": PROVIDER}}
+    entry = _client_alias(cfg, slug)
+    env_var = str(entry["key_env"]).strip()
+    if not _read_env_file().get(env_var, "").strip():
+        raise HTTPException(status_code=409, detail="This client key has no stored value")
+    provider_key = f"bonzai-key-{slug}"
+    provider = {"name": f"Bonzai key · {slug}", "api": BONZAI_BASE_URL,
+                "transport": "chat_completions", "key_env": env_var}
+    providers = cfg.setdefault("providers", {})
+    if not isinstance(providers, dict) or (provider_key in providers and providers[provider_key] != provider):
+        raise HTTPException(status_code=409, detail="The client endpoint name is already configured differently")
+    providers[provider_key] = provider
+    save_config(cfg)
+    if load_config().get("providers", {}).get(provider_key) != provider:
+        raise HTTPException(status_code=409, detail="This Hermes installation does not allow saving client endpoints")
+    return {"payload": {"model": model, "provider": f"custom:{provider_key}"}}
+
+
 @router.patch("/credentials/{slug}")
+@_serialized_mutation
 def rename_credential(slug: str, request: RenameCredentialRequest) -> dict:
     """Change the display label only. The alias and its secret keep their
     names, so chats already bound to this key stay bound."""
@@ -366,22 +478,36 @@ def rename_credential(slug: str, request: RenameCredentialRequest) -> dict:
     cfg = load_config()
     entry = _client_alias(cfg, slug)
     entry["label"] = request.label
-    save_config(cfg)
+    _save_alias_config(cfg)
     return {"credential": _public_client(slug, entry, _read_env_file())}
 
 
 @router.delete("/credentials/{slug}", status_code=204)
+@_serialized_mutation
 def remove_credential(slug: str) -> Response:
     if slug == DEFAULT_SLUG:
         raise HTTPException(status_code=403, detail="The default iO key cannot be removed here")
     cfg = load_config()
     entry = _client_alias(cfg, slug)
     env_var = str(entry["key_env"]).strip()
+    if slug in _load_session_keys().values():
+        raise HTTPException(status_code=409, detail="Select another key in every bound chat before removing this key")
     del _aliases(cfg)[slug]
-    save_config(cfg)
+    providers = cfg.get("providers", {})
+    provider_key = f"bonzai-key-{slug}"
+    expected = {"name": f"Bonzai key · {slug}", "api": BONZAI_BASE_URL,
+                "transport": "chat_completions", "key_env": env_var}
+    if isinstance(providers, dict) and providers.get(provider_key) == expected:
+        del providers[provider_key]
+    _save_alias_config(cfg)
+    if load_config().get("providers", {}) != cfg.get("providers", {}):
+        raise HTTPException(status_code=409, detail="Client endpoint removal was refused")
     still_used = any(
         isinstance(other, dict) and str(other.get("key_env", "")).strip() == env_var
         for other in _aliases(cfg).values()
+    ) or any(
+        isinstance(other, dict) and str(other.get("key_env") or other.get("api_key_env") or "").strip() == env_var
+        for other in (providers.values() if isinstance(providers, dict) else ())
     )
     if not still_used:
         remove_env_value(env_var)
@@ -399,12 +525,8 @@ def _session_keys_path() -> Path:
 
 def _session_keys_lock():
     """Cross-process lock for the small session assignment store."""
-    try:
-        from filelock import FileLock
-        return FileLock(str(_session_keys_path()) + ".lock")
-    except ImportError:
-        from contextlib import nullcontext
-        return nullcontext()
+    from filelock import FileLock
+    return FileLock(str(_session_keys_path()) + ".lock")
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
@@ -478,16 +600,18 @@ def get_session_key(session_id: str) -> dict:
 
 
 @router.post("/sessions/{session_id}")
+@_serialized_mutation
 def set_session_key(session_id: str, request: SetSessionKeyRequest) -> dict:
     session_id = _valid_session_id(session_id)
     slug = request.slug.strip().lower()
     if len(slug) > 100 or not _SLUG_RE.fullmatch(slug):
         raise HTTPException(status_code=422, detail="Invalid key alias")
+    if slug != DEFAULT_SLUG:
+        entry = _client_alias(load_config(), slug)
+        if not _read_env_file().get(str(entry["key_env"]).strip(), "").strip():
+            raise HTTPException(status_code=409, detail="This client key has no stored value")
 
     def assign(data: dict) -> None:
-        if slug == DEFAULT_SLUG:
-            data.pop(session_id, None)
-        else:
-            data[session_id] = slug
+        data[session_id] = slug
     _update_session_keys(assign)
     return {"session_id": session_id, "slug": slug}
